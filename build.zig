@@ -80,6 +80,7 @@ pub fn build(b: *std.Build) void {
                 // can be extremely useful in case of collisions (which can happen
                 // importing modules from different packages).
                 .{ .name = "zeke_nvim", .module = mod },
+                .{ .name = "zsync", .module = b.dependency("zsync", .{ .target = target, .optimize = optimize }).module("zsync") },
             },
         }),
     });

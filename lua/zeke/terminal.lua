@@ -1,6 +1,11 @@
 local M = {}
 
+local uv = vim.loop
 local config = require('zeke.config')
+
+-- Active background tasks
+local active_tasks = {}
+local task_counter = 0
 
 -- Create floating terminal window
 function M.create_float()
@@ -23,13 +28,19 @@ function M.create_float()
   return buf, win
 end
 
+-- Get the zeke binary path
+local function get_zeke_binary()
+  local config_opts = config.get()
+  return config_opts.binary_path or './zig-out/bin/zeke_nvim'
+end
+
 -- Run zeke command in terminal
 function M.run_command(cmd, opts)
   opts = opts or {}
   
   local buf, win = M.create_float()
   
-  local full_cmd = config.get().cmd .. ' ' .. cmd
+  local full_cmd = get_zeke_binary() .. ' ' .. cmd
   
   vim.fn.termopen(full_cmd, {
     on_exit = function(_, code)
@@ -48,84 +59,273 @@ function M.run_command(cmd, opts)
   return buf, win
 end
 
--- Execute zeke command and handle JSON response
+-- Execute command asynchronously with callbacks
 function M.execute_command(cmd, opts)
   opts = opts or {}
   
-  local full_cmd = config.get().cmd .. ' ' .. cmd
+  local full_cmd = get_zeke_binary() .. ' ' .. cmd
+  local task_id = task_counter + 1
+  task_counter = task_id
   
-  vim.fn.jobstart(full_cmd, {
-    stdout_buffered = true,
-    stderr_buffered = true,
-    on_stdout = function(_, data)
-      if data and #data > 0 then
-        local json_str = table.concat(data, '\n')
-        if json_str ~= '' then
-          local ok, response = pcall(vim.json.decode, json_str)
-          if ok and response then
-            if response.success then
-              if opts.on_success then
-                opts.on_success(response.content)
-              else
-                M.show_response(response.content)
-              end
-            else
-              M.show_error(response.error or 'Unknown error')
-            end
-          else
-            M.show_error('Failed to parse JSON response')
-          end
+  -- Create a unique buffer for this task's output
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(buf, 'Zeke Task #' .. task_id)
+  vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
+  vim.api.nvim_buf_set_option(buf, 'filetype', 'json')
+  
+  local stdout_chunks = {}
+  local stderr_chunks = {}
+  
+  local handle, pid
+  handle, pid = uv.spawn('sh', {
+    args = { '-c', full_cmd },
+    stdio = { nil, uv.new_pipe(false), uv.new_pipe(false) }
+  }, function(code, signal)
+    -- Process completion
+    local stdout_data = table.concat(stdout_chunks, '')
+    local stderr_data = table.concat(stderr_chunks, '')
+    
+    -- Clean up the task
+    active_tasks[task_id] = nil
+    
+    vim.schedule(function()
+      local success, response = M.parse_response(stdout_data)
+      
+      if success and response then
+        if opts.on_success then
+          opts.on_success(response.content)
+        else
+          M.show_response(response.content, buf)
+        end
+      else
+        local error_msg = response and response.error or stderr_data or 'Unknown error'
+        if opts.on_error then
+          opts.on_error(error_msg)
+        else
+          M.show_error(error_msg, buf)
         end
       end
-    end,
-    on_stderr = function(_, data)
-      if data and #data > 0 then
-        local error_str = table.concat(data, '\n')
-        if error_str ~= '' then
-          M.show_error(error_str)
-        end
-      end
-    end,
-    on_exit = function(_, code)
+      
       if opts.on_exit then
         opts.on_exit(code)
       end
-    end
-  })
+    end)
+  end)
+  
+  if not handle then
+    vim.schedule(function()
+      local error_msg = 'Failed to start zeke process'
+      if opts.on_error then
+        opts.on_error(error_msg)
+      else
+        M.show_error(error_msg, buf)
+      end
+    end)
+    return
+  end
+  
+  -- Store task info
+  active_tasks[task_id] = {
+    handle = handle,
+    pid = pid,
+    cmd = cmd,
+    buf = buf,
+    start_time = vim.fn.localtime()
+  }
+  
+  -- Read stdout
+  if handle.stdout then
+    uv.read_start(handle.stdout, function(err, data)
+      if err then
+        vim.schedule(function()
+          local error_msg = 'Error reading stdout: ' .. err
+          if opts.on_error then
+            opts.on_error(error_msg)
+          else
+            M.show_error(error_msg, buf)
+          end
+        end)
+      elseif data then
+        table.insert(stdout_chunks, data)
+        
+        -- Stream partial updates if enabled
+        if opts.on_stream then
+          vim.schedule(function()
+            opts.on_stream(data)
+          end)
+        end
+      end
+    end)
+  end
+  
+  -- Read stderr
+  if handle.stderr then
+    uv.read_start(handle.stderr, function(err, data)
+      if err then
+        vim.schedule(function()
+          local error_msg = 'Error reading stderr: ' .. err
+          if opts.on_error then
+            opts.on_error(error_msg)
+          else
+            M.show_error(error_msg, buf)
+          end
+        end)
+      elseif data then
+        table.insert(stderr_chunks, data)
+      end
+    end)
+  end
+  
+  -- Show task started notification
+  if opts.show_progress ~= false then
+    M.show_task_started(task_id, cmd, buf)
+  end
+  
+  return task_id
 end
 
--- Show response in a floating window
-function M.show_response(content)
-  local buf = vim.api.nvim_create_buf(false, true)
-  local lines = vim.split(content, '\n')
+-- Parse JSON response from zeke binary
+function M.parse_response(json_str)
+  if not json_str or json_str == '' then
+    return false, nil
+  end
+  
+  local success, response = pcall(vim.fn.json_decode, json_str)
+  if not success then
+    return false, { error = 'Failed to parse response: ' .. json_str }
+  end
+  
+  return response.success, response
+end
+
+-- Show response in a buffer
+function M.show_response(content, buf)
+  buf = buf or vim.api.nvim_create_buf(false, true)
+  
+  -- Split content into lines
+  local lines = vim.split(content, '\n', { plain = true })
+  
+  -- Set buffer content
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
+  vim.api.nvim_buf_set_option(buf, 'filetype', 'markdown')
+  vim.api.nvim_buf_set_option(buf, 'modifiable', false)
+  
+  -- Open in a split
+  vim.cmd('split')
+  vim.api.nvim_win_set_buf(0, buf)
+  vim.api.nvim_buf_set_name(buf, 'Zeke Response')
+  
+  -- Add keymaps for the response buffer
+  local opts = { buffer = buf, silent = true }
+  vim.keymap.set('n', 'q', '<CMD>close<CR>', opts)
+  vim.keymap.set('n', '<ESC>', '<CMD>close<CR>', opts)
+end
+
+-- Show error in a buffer
+function M.show_error(error_msg, buf)
+  buf = buf or vim.api.nvim_create_buf(false, true)
+  
+  local lines = {
+    'Error occurred:',
+    '',
+    error_msg
+  }
   
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
+  vim.api.nvim_buf_set_option(buf, 'filetype', 'text')
   vim.api.nvim_buf_set_option(buf, 'modifiable', false)
-  vim.api.nvim_buf_set_option(buf, 'filetype', 'markdown')
   
-  local width = math.min(100, math.floor(vim.o.columns * 0.8))
-  local height = math.min(30, math.floor(vim.o.lines * 0.8))
-  
-  local win = vim.api.nvim_open_win(buf, true, {
-    relative = 'editor',
-    width = width,
-    height = height,
-    row = math.floor((vim.o.lines - height) / 2),
-    col = math.floor((vim.o.columns - width) / 2),
-    style = 'minimal',
-    border = 'rounded',
-    title = 'Zeke AI Response',
-    title_pos = 'center'
-  })
-  
-  -- Set up keymaps for response window
-  vim.api.nvim_buf_set_keymap(buf, 'n', 'q', ':q<CR>', {noremap = true})
-  vim.api.nvim_buf_set_keymap(buf, 'n', '<Esc>', ':q<CR>', {noremap = true})
+  -- Show as notification or buffer based on config
+  local config_opts = config.get()
+  if config_opts.show_errors_as_notifications then
+    vim.notify(error_msg, vim.log.levels.ERROR, { title = 'Zeke Error' })
+  else
+    vim.cmd('split')
+    vim.api.nvim_win_set_buf(0, buf)
+    vim.api.nvim_buf_set_name(buf, 'Zeke Error')
+    
+    local opts = { buffer = buf, silent = true }
+    vim.keymap.set('n', 'q', '<CMD>close<CR>', opts)
+    vim.keymap.set('n', '<ESC>', '<CMD>close<CR>', opts)
+  end
 end
 
--- Show error message
-function M.show_error(error_msg)
-  vim.notify('Zeke Error: ' .. error_msg, vim.log.levels.ERROR)
+-- Show task started notification
+function M.show_task_started(task_id, cmd, buf)
+  local message = string.format('Zeke Task #%d started: %s', task_id, cmd)
+  vim.notify(message, vim.log.levels.INFO, { title = 'Zeke' })
+  
+  -- Add initial content to buffer
+  local lines = {
+    'Zeke Task #' .. task_id,
+    'Command: ' .. cmd,
+    'Status: Running...',
+    'Started at: ' .. vim.fn.strftime('%H:%M:%S'),
+    '',
+    'Output will appear here...'
+  }
+  
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+end
+
+-- Get active tasks
+function M.get_active_tasks()
+  local tasks = {}
+  for task_id, task_info in pairs(active_tasks) do
+    table.insert(tasks, {
+      id = task_id,
+      cmd = task_info.cmd,
+      pid = task_info.pid,
+      start_time = task_info.start_time,
+      duration = vim.fn.localtime() - task_info.start_time
+    })
+  end
+  return tasks
+end
+
+-- Cancel a task
+function M.cancel_task(task_id)
+  local task = active_tasks[task_id]
+  if not task then
+    vim.notify('Task #' .. task_id .. ' not found', vim.log.levels.WARN)
+    return false
+  end
+  
+  if task.handle then
+    task.handle:kill('sigterm')
+    active_tasks[task_id] = nil
+    vim.notify('Task #' .. task_id .. ' cancelled', vim.log.levels.INFO)
+    return true
+  end
+  
+  return false
+end
+
+-- Cancel all active tasks
+function M.cancel_all_tasks()
+  local count = 0
+  for task_id, _ in pairs(active_tasks) do
+    if M.cancel_task(task_id) then
+      count = count + 1
+    end
+  end
+  
+  if count > 0 then
+    vim.notify(string.format('Cancelled %d tasks', count), vim.log.levels.INFO)
+  else
+    vim.notify('No active tasks to cancel', vim.log.levels.INFO)
+  end
+  
+  return count
+end
+
+-- Execute command with streaming support
+function M.execute_command_stream(cmd, on_chunk, opts)
+  opts = opts or {}
+  opts.on_stream = on_chunk
+  return M.execute_command(cmd, opts)
 end
 
 return M

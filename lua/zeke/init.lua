@@ -28,6 +28,38 @@ function M.setup(opts)
     commands.analyze(analysis_type)
   end, { nargs = '?', desc = 'Analyze code with Zeke' })
   
+  -- Model management commands
+  vim.api.nvim_create_user_command('ZekeModels', function()
+    commands.list_models()
+  end, { desc = 'List available AI models' })
+  
+  vim.api.nvim_create_user_command('ZekeSetModel', function(args)
+    commands.set_model(args.args)
+  end, { nargs = '?', desc = 'Set AI model' })
+  
+  vim.api.nvim_create_user_command('ZekeCurrentModel', function()
+    commands.get_current_model()
+  end, { desc = 'Show current AI model' })
+  
+  -- Task management commands
+  vim.api.nvim_create_user_command('ZekeTasks', function()
+    commands.list_tasks()
+  end, { desc = 'List active Zeke tasks' })
+  
+  vim.api.nvim_create_user_command('ZekeCancelTask', function(args)
+    local task_id = tonumber(args.args)
+    commands.cancel_task(task_id)
+  end, { nargs = '?', desc = 'Cancel a Zeke task' })
+  
+  vim.api.nvim_create_user_command('ZekeCancelAll', function()
+    commands.cancel_all_tasks()
+  end, { desc = 'Cancel all Zeke tasks' })
+  
+  -- Streaming commands
+  vim.api.nvim_create_user_command('ZekeChatStream', function(args)
+    commands.chat_stream(args.args)
+  end, { nargs = '?', desc = 'Chat with Zeke AI (streaming)' })
+  
   -- Set up keymaps
   local keymaps = config.get().keymaps
   if keymaps.chat then
@@ -64,6 +96,22 @@ function M.setup(opts)
     end, { desc = 'Analyze code with Zeke' })
   end
   
+  if keymaps.models then
+    vim.keymap.set('n', keymaps.models, commands.list_models, { desc = 'List AI models' })
+  end
+  
+  if keymaps.tasks then
+    vim.keymap.set('n', keymaps.tasks, commands.list_tasks, { desc = 'List active tasks' })
+  end
+  
+  if keymaps.chat_stream then
+    vim.keymap.set('n', keymaps.chat_stream, function()
+      vim.ui.input({prompt = 'Streaming Chat: '}, function(input)
+        if input then commands.chat_stream(input) end
+      end)
+    end, { desc = 'Streaming chat with Zeke' })
+  end
+  
   -- Auto-reload files if enabled
   if config.get().auto_reload then
     vim.api.nvim_create_autocmd('FocusGained', {
@@ -79,5 +127,12 @@ M.edit = commands.edit_buffer
 M.explain = commands.explain
 M.create = commands.create_file
 M.analyze = commands.analyze
+M.list_models = commands.list_models
+M.set_model = commands.set_model
+M.get_current_model = commands.get_current_model
+M.list_tasks = commands.list_tasks
+M.cancel_task = commands.cancel_task
+M.cancel_all_tasks = commands.cancel_all_tasks
+M.chat_stream = commands.chat_stream
 
 return M
