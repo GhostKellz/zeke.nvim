@@ -153,36 +153,42 @@ pub const AIService = struct {
         const api_key = self.auth_config.getApiKey(.openai) orelse return AIError.AuthenticationFailed;
         
         // Build request body
-        var request_obj = json.ObjectMap.init(self.allocator);
-        defer request_obj.deinit();
+        const OpenAIRequest = struct {
+            model: []const u8,
+            messages: []const struct {
+                role: []const u8,
+                content: []const u8,
+            },
+            max_tokens: ?u32 = null,
+            temperature: ?f32 = null,
+            stream: bool = false,
+        };
         
-        try request_obj.put("model", json.Value{ .string = request.model.toString() });
-        try request_obj.put("stream", json.Value{ .bool = request.stream });
-        
-        if (request.max_tokens) |tokens| {
-            try request_obj.put("max_tokens", json.Value{ .integer = @intCast(tokens) });
-        }
-        
-        if (request.temperature) |temp| {
-            try request_obj.put("temperature", json.Value{ .float = temp });
-        }
-        
-        // Convert messages
-        var messages_array = json.Array.init(self.allocator);
-        defer messages_array.deinit();
+        var messages_list = std.ArrayList(struct {
+            role: []const u8,
+            content: []const u8,
+        }){};
+        defer messages_list.deinit(self.allocator);
         
         for (request.messages) |msg| {
-            var msg_obj = json.ObjectMap.init(self.allocator);
-            defer msg_obj.deinit();
-            try msg_obj.put("role", json.Value{ .string = msg.role });
-            try msg_obj.put("content", json.Value{ .string = msg.content });
-            try messages_array.append(json.Value{ .object = msg_obj });
+            try messages_list.append(self.allocator, .{
+                .role = msg.role,
+                .content = msg.content,
+            });
         }
         
-        try request_obj.put("messages", json.Value{ .array = messages_array });
+        const openai_request = OpenAIRequest{
+            .model = request.model.toString(),
+            .messages = messages_list.items,
+            .max_tokens = request.max_tokens,
+            .temperature = request.temperature,
+            .stream = request.stream,
+        };
         
-        const request_body = try json.stringifyAlloc(self.allocator, json.Value{ .object = request_obj }, .{});
-        defer self.allocator.free(request_body);
+        var request_body_list = std.ArrayList(u8){};
+        defer request_body_list.deinit(self.allocator);
+        
+        try std.json.Stringify.value(openai_request, .{}, request_body_list.writer(self.allocator));
         
         // Setup headers
         var headers = std.StringHashMap([]const u8).init(self.allocator);
@@ -198,7 +204,7 @@ pub const AIService = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}/chat/completions", .{AIProvider.openai.getBaseUrl()});
         defer self.allocator.free(url);
         
-        var response = try self.http_client.post(url, headers, request_body);
+        var response = try self.http_client.post(url, headers, request_body_list.items);
         defer response.deinit(self.allocator);
         
         if (response.status != 200) {
@@ -211,17 +217,22 @@ pub const AIService = struct {
         }
         
         // Parse response
-        const parsed = json.parseFromSlice(json.Value, self.allocator, response.body, .{}) catch return AIError.ResponseParsingFailed;
+        const OpenAIResponse = struct {
+            choices: []struct {
+                message: struct {
+                    content: []const u8,
+                },
+            },
+        };
+        
+        const parsed = json.parseFromSlice(OpenAIResponse, self.allocator, response.body, .{}) catch return AIError.ResponseParsingFailed;
         defer parsed.deinit();
         
-        const choices = parsed.value.object.get("choices") orelse return AIError.ResponseParsingFailed;
-        if (choices.array.items.len == 0) return AIError.ResponseParsingFailed;
-        
-        const message = choices.array.items[0].object.get("message") orelse return AIError.ResponseParsingFailed;
-        const content = message.object.get("content") orelse return AIError.ResponseParsingFailed;
+        if (parsed.value.choices.len == 0) return AIError.ResponseParsingFailed;
+        const content = parsed.value.choices[0].message.content;
         
         return ChatResponse{
-            .content = try self.allocator.dupe(u8, content.string),
+            .content = try self.allocator.dupe(u8, content),
             .model = try self.allocator.dupe(u8, request.model.toString()),
         };
     }
@@ -230,35 +241,43 @@ pub const AIService = struct {
         const api_key = self.auth_config.getApiKey(.anthropic) orelse return AIError.AuthenticationFailed;
         
         // Build request body for Claude
-        var request_obj = json.ObjectMap.init(self.allocator);
-        defer request_obj.deinit();
+        const ClaudeRequest = struct {
+            model: []const u8,
+            messages: []const struct {
+                role: []const u8,
+                content: []const u8,
+            },
+            max_tokens: u32,
+            temperature: ?f32 = null,
+        };
         
-        try request_obj.put("model", json.Value{ .string = request.model.toString() });
-        try request_obj.put("max_tokens", json.Value{ .integer = request.max_tokens orelse 1024 });
-        
-        if (request.temperature) |temp| {
-            try request_obj.put("temperature", json.Value{ .float = temp });
-        }
-        
-        // Convert messages (Claude format is slightly different)
-        var messages_array = json.Array.init(self.allocator);
-        defer messages_array.deinit();
+        var messages_list = std.ArrayList(struct {
+            role: []const u8,
+            content: []const u8,
+        }){};
+        defer messages_list.deinit(self.allocator);
         
         for (request.messages) |msg| {
             // Skip system messages for now, Claude handles them differently
             if (std.mem.eql(u8, msg.role, "system")) continue;
             
-            var msg_obj = json.ObjectMap.init(self.allocator);
-            defer msg_obj.deinit();
-            try msg_obj.put("role", json.Value{ .string = msg.role });
-            try msg_obj.put("content", json.Value{ .string = msg.content });
-            try messages_array.append(json.Value{ .object = msg_obj });
+            try messages_list.append(self.allocator, .{
+                .role = msg.role,
+                .content = msg.content,
+            });
         }
         
-        try request_obj.put("messages", json.Value{ .array = messages_array });
+        const claude_request = ClaudeRequest{
+            .model = request.model.toString(),
+            .messages = messages_list.items,
+            .max_tokens = request.max_tokens orelse 1024,
+            .temperature = request.temperature,
+        };
         
-        const request_body = try json.stringifyAlloc(self.allocator, json.Value{ .object = request_obj }, .{});
-        defer self.allocator.free(request_body);
+        var request_body_list = std.ArrayList(u8){};
+        defer request_body_list.deinit(self.allocator);
+        
+        try std.json.Stringify.value(claude_request, .{}, request_body_list.writer(self.allocator));
         
         // Setup headers
         var headers = std.StringHashMap([]const u8).init(self.allocator);
@@ -272,7 +291,7 @@ pub const AIService = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}/messages", .{AIProvider.anthropic.getBaseUrl()});
         defer self.allocator.free(url);
         
-        var response = try self.http_client.post(url, headers, request_body);
+        var response = try self.http_client.post(url, headers, request_body_list.items);
         defer response.deinit(self.allocator);
         
         if (response.status != 200) {
@@ -285,40 +304,50 @@ pub const AIService = struct {
         }
         
         // Parse response
-        const parsed = json.parseFromSlice(json.Value, self.allocator, response.body, .{}) catch return AIError.ResponseParsingFailed;
+        const ClaudeResponse = struct {
+            content: []struct {
+                text: []const u8,
+            },
+        };
+        
+        const parsed = json.parseFromSlice(ClaudeResponse, self.allocator, response.body, .{}) catch return AIError.ResponseParsingFailed;
         defer parsed.deinit();
         
-        const content_array = parsed.value.object.get("content") orelse return AIError.ResponseParsingFailed;
-        if (content_array.array.items.len == 0) return AIError.ResponseParsingFailed;
-        
-        const text_content = content_array.array.items[0].object.get("text") orelse return AIError.ResponseParsingFailed;
+        if (parsed.value.content.len == 0) return AIError.ResponseParsingFailed;
+        const text_content = parsed.value.content[0].text;
         
         return ChatResponse{
-            .content = try self.allocator.dupe(u8, text_content.string),
+            .content = try self.allocator.dupe(u8, text_content),
             .model = try self.allocator.dupe(u8, request.model.toString()),
         };
     }
     
     fn chatOllama(self: *Self, request: ChatRequest) !ChatResponse {
         // Build request body for Ollama
-        var request_obj = json.ObjectMap.init(self.allocator);
-        defer request_obj.deinit();
-        
-        try request_obj.put("model", json.Value{ .string = request.model.toString() });
-        try request_obj.put("stream", json.Value{ .bool = false });
+        const OllamaRequest = struct {
+            model: []const u8,
+            prompt: []const u8,
+            stream: bool = false,
+        };
         
         // Combine all messages into a single prompt for Ollama
-        var prompt = std.ArrayList(u8).init(self.allocator);
-        defer prompt.deinit();
+        var prompt = std.ArrayList(u8){};
+        defer prompt.deinit(self.allocator);
         
         for (request.messages) |msg| {
-            try prompt.writer().print("[{s}]: {s}\n", .{ msg.role, msg.content });
+            try prompt.writer(self.allocator).print("[{s}]: {s}\n", .{ msg.role, msg.content });
         }
         
-        try request_obj.put("prompt", json.Value{ .string = prompt.items });
+        const ollama_request = OllamaRequest{
+            .model = request.model.toString(),
+            .prompt = prompt.items,
+            .stream = false,
+        };
         
-        const request_body = try json.stringifyAlloc(self.allocator, json.Value{ .object = request_obj }, .{});
-        defer self.allocator.free(request_body);
+        var request_body_list = std.ArrayList(u8){};
+        defer request_body_list.deinit(self.allocator);
+        
+        try std.json.Stringify.value(ollama_request, .{}, request_body_list.writer(self.allocator));
         
         // Setup headers
         var headers = std.StringHashMap([]const u8).init(self.allocator);
@@ -330,7 +359,7 @@ pub const AIService = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}/generate", .{base_url});
         defer self.allocator.free(url);
         
-        var response = try self.http_client.post(url, headers, request_body);
+        var response = try self.http_client.post(url, headers, request_body_list.items);
         defer response.deinit(self.allocator);
         
         if (response.status != 200) {
@@ -338,13 +367,15 @@ pub const AIService = struct {
         }
         
         // Parse response
-        const parsed = json.parseFromSlice(json.Value, self.allocator, response.body, .{}) catch return AIError.ResponseParsingFailed;
+        const OllamaResponse = struct {
+            response: []const u8,
+        };
+        
+        const parsed = json.parseFromSlice(OllamaResponse, self.allocator, response.body, .{}) catch return AIError.ResponseParsingFailed;
         defer parsed.deinit();
         
-        const response_text = parsed.value.object.get("response") orelse return AIError.ResponseParsingFailed;
-        
         return ChatResponse{
-            .content = try self.allocator.dupe(u8, response_text.string),
+            .content = try self.allocator.dupe(u8, parsed.value.response),
             .model = try self.allocator.dupe(u8, request.model.toString()),
         };
     }
@@ -353,37 +384,45 @@ pub const AIService = struct {
         const api_key = self.auth_config.getApiKey(.google) orelse return AIError.AuthenticationFailed;
         
         // Build request body for Gemini
-        var request_obj = json.ObjectMap.init(self.allocator);
-        defer request_obj.deinit();
+        const GeminiRequest = struct {
+            contents: []const struct {
+                role: []const u8,
+                parts: []const struct {
+                    text: []const u8,
+                },
+            },
+        };
         
-        // Convert messages to Gemini format
-        var contents_array = json.Array.init(self.allocator);
-        defer contents_array.deinit();
+        var contents_list = std.ArrayList(struct {
+            role: []const u8,
+            parts: []const struct {
+                text: []const u8,
+            },
+        }){};
+        defer contents_list.deinit(self.allocator);
         
         for (request.messages) |msg| {
-            var content_obj = json.ObjectMap.init(self.allocator);
-            defer content_obj.deinit();
-            
             // Map roles
             const role = if (std.mem.eql(u8, msg.role, "assistant")) "model" else "user";
-            try content_obj.put("role", json.Value{ .string = role });
             
-            var parts_array = json.Array.init(self.allocator);
-            defer parts_array.deinit();
+            var parts = std.ArrayList(struct { text: []const u8 }){};
+            defer parts.deinit(self.allocator);
+            try parts.append(self.allocator, .{ .text = msg.content });
             
-            var part_obj = json.ObjectMap.init(self.allocator);
-            defer part_obj.deinit();
-            try part_obj.put("text", json.Value{ .string = msg.content });
-            try parts_array.append(json.Value{ .object = part_obj });
-            
-            try content_obj.put("parts", json.Value{ .array = parts_array });
-            try contents_array.append(json.Value{ .object = content_obj });
+            try contents_list.append(self.allocator, .{
+                .role = role,
+                .parts = parts.items,
+            });
         }
         
-        try request_obj.put("contents", json.Value{ .array = contents_array });
+        const gemini_request = GeminiRequest{
+            .contents = contents_list.items,
+        };
         
-        const request_body = try json.stringifyAlloc(self.allocator, json.Value{ .object = request_obj }, .{});
-        defer self.allocator.free(request_body);
+        var request_body_list = std.ArrayList(u8){};
+        defer request_body_list.deinit(self.allocator);
+        
+        try std.json.Stringify.value(gemini_request, .{}, request_body_list.writer(self.allocator));
         
         // Setup headers
         var headers = std.StringHashMap([]const u8).init(self.allocator);
@@ -398,7 +437,7 @@ pub const AIService = struct {
         });
         defer self.allocator.free(url);
         
-        var response = try self.http_client.post(url, headers, request_body);
+        var response = try self.http_client.post(url, headers, request_body_list.items);
         defer response.deinit(self.allocator);
         
         if (response.status != 200) {
@@ -411,20 +450,26 @@ pub const AIService = struct {
         }
         
         // Parse response
-        const parsed = json.parseFromSlice(json.Value, self.allocator, response.body, .{}) catch return AIError.ResponseParsingFailed;
+        const GeminiResponse = struct {
+            candidates: []struct {
+                content: struct {
+                    parts: []struct {
+                        text: []const u8,
+                    },
+                },
+            },
+        };
+        
+        const parsed = json.parseFromSlice(GeminiResponse, self.allocator, response.body, .{}) catch return AIError.ResponseParsingFailed;
         defer parsed.deinit();
         
-        const candidates = parsed.value.object.get("candidates") orelse return AIError.ResponseParsingFailed;
-        if (candidates.array.items.len == 0) return AIError.ResponseParsingFailed;
-        
-        const content = candidates.array.items[0].object.get("content") orelse return AIError.ResponseParsingFailed;
-        const parts = content.object.get("parts") orelse return AIError.ResponseParsingFailed;
-        if (parts.array.items.len == 0) return AIError.ResponseParsingFailed;
-        
-        const text = parts.array.items[0].object.get("text") orelse return AIError.ResponseParsingFailed;
+        if (parsed.value.candidates.len == 0) return AIError.ResponseParsingFailed;
+        const content = parsed.value.candidates[0].content;
+        if (content.parts.len == 0) return AIError.ResponseParsingFailed;
+        const text = content.parts[0].text;
         
         return ChatResponse{
-            .content = try self.allocator.dupe(u8, text.string),
+            .content = try self.allocator.dupe(u8, text),
             .model = try self.allocator.dupe(u8, request.model.toString()),
         };
     }

@@ -30,16 +30,16 @@ pub const StreamProcessor = struct {
     pub fn init(allocator: Allocator) Self {
         return Self{
             .allocator = allocator,
-            .buffer = std.ArrayList(u8).init(allocator),
+            .buffer = std.ArrayList(u8){},
         };
     }
     
     pub fn deinit(self: *Self) void {
-        self.buffer.deinit();
+        self.buffer.deinit(self.allocator);
     }
     
     pub fn processChunk(self: *Self, data: []const u8) !?StreamChunk {
-        try self.buffer.appendSlice(data);
+        try self.buffer.appendSlice(self.allocator, data);
         
         // Look for complete SSE events
         while (std.mem.indexOf(u8, self.buffer.items, "\n\n")) |end_pos| {
@@ -48,7 +48,7 @@ pub const StreamProcessor = struct {
             // Remove processed data from buffer
             const remaining = self.buffer.items[end_pos + 2..];
             self.buffer.clearRetainingCapacity();
-            try self.buffer.appendSlice(remaining);
+            try self.buffer.appendSlice(self.allocator, remaining);
             
             // Parse the SSE event
             return try self.parseSSEEvent(event_data);

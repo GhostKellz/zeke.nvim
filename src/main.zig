@@ -368,10 +368,12 @@ fn outputSuccess(allocator: Allocator, content: []const u8) !void {
         .content = content,
     };
     
-    const json_string = try json.stringifyAlloc(allocator, response, .{});
-    defer allocator.free(json_string);
+    var string_writer = std.io.Writer.Allocating.init(allocator);
+    defer string_writer.deinit();
     
-    std.debug.print("{s}\n", .{json_string});
+    try std.json.Stringify.value(response, .{}, &string_writer.writer);
+    
+    std.debug.print("{s}\n", .{string_writer.written()});
 }
 
 fn outputError(allocator: Allocator, error_message: []const u8) !void {
@@ -381,10 +383,12 @@ fn outputError(allocator: Allocator, error_message: []const u8) !void {
         .@"error" = error_message,
     };
     
-    const json_string = try json.stringifyAlloc(allocator, response, .{});
-    defer allocator.free(json_string);
+    var string_writer = std.io.Writer.Allocating.init(allocator);
+    defer string_writer.deinit();
     
-    std.debug.print("{s}\n", .{json_string});
+    try std.json.Stringify.value(response, .{}, &string_writer.writer);
+    
+    std.debug.print("{s}\n", .{string_writer.written()});
 }
 
 test "basic functionality" {

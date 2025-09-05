@@ -67,8 +67,8 @@ pub const HttpClient = struct {
         _ = try stream.writeAll(request_string);
         
         // Read response
-        var response_buffer = std.ArrayList(u8).init(self.allocator);
-        defer response_buffer.deinit();
+        var response_buffer = std.ArrayList(u8){};
+        defer response_buffer.deinit(self.allocator);
         
         var read_buffer: [4096]u8 = undefined;
         var content_length: ?usize = null;
@@ -80,7 +80,7 @@ pub const HttpClient = struct {
             };
             
             if (bytes_read == 0) break;
-            try response_buffer.appendSlice(read_buffer[0..bytes_read]);
+            try response_buffer.appendSlice(self.allocator, read_buffer[0..bytes_read]);
             
             // Check if we have complete headers
             if (!header_end_found) {
@@ -148,8 +148,8 @@ fn parseUrl(allocator: Allocator, url: []const u8) !ParsedUrl {
 }
 
 fn buildRequestString(allocator: Allocator, method: []const u8, parsed_url: ParsedUrl, headers: ?std.StringHashMap([]const u8), body: ?[]const u8) ![]const u8 {
-    var request = std.ArrayList(u8).init(allocator);
-    defer request.deinit();
+    var request = std.ArrayList(u8){};
+    defer request.deinit(allocator);
     
     // Request line
     try request.writer().print("{s} {s} HTTP/1.1\r\n", .{ method, parsed_url.path });
@@ -158,8 +158,8 @@ fn buildRequestString(allocator: Allocator, method: []const u8, parsed_url: Pars
     try request.writer().print("Host: {s}\r\n", .{parsed_url.host});
     
     // Default headers
-    try request.appendSlice("User-Agent: zeke-nvim/1.0\r\n");
-    try request.appendSlice("Connection: close\r\n");
+    try request.appendSlice(allocator, "User-Agent: zeke-nvim/1.0\r\n");
+    try request.appendSlice(allocator, "Connection: close\r\n");
     
     // Custom headers
     if (headers) |h| {
@@ -175,14 +175,14 @@ fn buildRequestString(allocator: Allocator, method: []const u8, parsed_url: Pars
     }
     
     // End headers
-    try request.appendSlice("\r\n");
+    try request.appendSlice(allocator, "\r\n");
     
     // Body
     if (body) |b| {
-        try request.appendSlice(b);
+        try request.appendSlice(allocator, b);
     }
     
-    return request.toOwnedSlice();
+    return request.toOwnedSlice(allocator);
 }
 
 fn parseContentLength(headers: []const u8) ?usize {
