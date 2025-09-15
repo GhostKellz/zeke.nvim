@@ -1,0 +1,1 @@
+{"rustc":15597765236515928571,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[5157631553186200874,"build_script_build",false,15998700876716191472]],"local":[{"RerunIfChanged":{"output":"x86_64-unknown-linux-gnu/debug/build/num-traits-0ea1c9d7db3d7285/output","paths":["build.rs"]}}],"rustflags":["-C","target-cpu=native"],"config":0,"compile_kind":0}

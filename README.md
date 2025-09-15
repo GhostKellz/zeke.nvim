@@ -1,204 +1,260 @@
-# zeke.nvim
+# 🚀 zeke.nvim
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Neovim](https://img.shields.io/badge/Neovim-0.8+-green.svg)](https://neovim.io)
-[![Zig](https://img.shields.io/badge/Zig-0.13+-orange.svg)](https://ziglang.org)
+[![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust)](https://www.rust-lang.org/)
+[![Neovim](https://img.shields.io/badge/Neovim-0.9+-green?logo=neovim)](https://neovim.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![GitHub release](https://img.shields.io/github/release/ghostkellz/zeke.nvim.svg)](https://github.com/ghostkellz/zeke.nvim/releases)
 [![GitHub stars](https://img.shields.io/github/stars/ghostkellz/zeke.nvim)](https://github.com/ghostkellz/zeke.nvim/stargazers)
 
-A Neovim plugin that integrates with the [Zeke CLI](https://github.com/ghostkellz/zeke) - an AI-powered development assistant built with Zig.
+A powerful Neovim plugin for the Zeke AI platform - your Claude Code alternative, built with Rust for blazing-fast performance.
 
 ## ✨ Features
 
-- **AI-Powered Code Assistance**: Chat with Zeke AI directly from Neovim
-- **Code Editing**: Edit code with natural language instructions
-- **Code Explanation**: Get detailed explanations of code snippets
-- **Code Analysis**: Analyze code quality, security, and performance
-- **File Creation**: Generate new files from descriptions
-- **Floating Terminal**: Beautiful floating terminal interface
-- **Auto-Reload**: Automatically reload files when Zeke makes changes
+- 🤖 **Multiple AI Providers**: OpenAI, Claude, GitHub Copilot, Ollama
+- ⚡ **Rust Performance**: Native speed with mlua bindings
+- 💬 **Interactive Chat UI**: Floating window with conversation history
+- 📁 **Workspace Context**: File tree integration and project awareness
+- 🔍 **Smart Search**: Workspace file indexing and fuzzy search
+- 📝 **Intelligent Editing**: Context-aware code editing with diff preview
+- 🔧 **Diff View**: Visual code change review with accept/reject
+- 🌊 **Streaming Support**: Real-time streaming responses
+- 📚 **Context Management**: Multi-file context with smart prompting
+- 🎯 **Code Analysis**: Quality, performance, and security analysis
+- 📦 **Task Management**: Background processing and cancellation
+- 🔧 **Highly Configurable**: Extensive customization options
 
 ## 📦 Installation
 
-### Using [lazy.nvim](https://github.com/folke/lazy.nvim) (Recommended)
+### Using [lazy.nvim](https://github.com/folke/lazy.nvim)
 
 ```lua
 {
-  'ghostkellz/zeke.nvim',
-  cmd = {
-    'ZekeChat',
-    'ZekeEdit', 
-    'ZekeExplain',
-    'ZekeCreate',
-    'ZekeAnalyze'
+  "ghostkellz/zeke.nvim",
+  build = "cargo build --release",
+  dependencies = {
+    "nvim-lua/plenary.nvim",
   },
-  keys = {
-    { '<leader>zc', desc = 'Zeke Chat' },
-    { '<leader>ze', desc = 'Zeke Edit' },
-    { '<leader>zx', desc = 'Zeke Explain' },
-    { '<leader>zf', desc = 'Zeke Create' },
-    { '<leader>za', desc = 'Zeke Analyze' },
-  },
-  opts = {
-    cmd = 'zeke',
-    auto_reload = true,
-  }
-}
-```
-
-### Kickstart.nvim Integration
-
-```lua
-{
-  'ghostkellz/zeke.nvim',
-  cmd = { 'ZekeChat', 'ZekeEdit', 'ZekeExplain', 'ZekeCreate', 'ZekeAnalyze' },
-  keys = {
-    { '<leader>zc', mode = 'n', desc = '[Z]eke [C]hat' },
-    { '<leader>ze', mode = 'n', desc = '[Z]eke [E]dit' },
-    { '<leader>zx', mode = 'n', desc = '[Z]eke E[x]plain' },
-    { '<leader>zf', mode = 'n', desc = '[Z]eke Create [F]ile' },
-    { '<leader>za', mode = 'n', desc = '[Z]eke [A]nalyze' },
-  },
-  cond = function()
-    return vim.fn.executable('zeke') == 1
+  config = function()
+    require("zeke").setup({
+      -- your configuration
+    })
   end,
-  opts = {
-    cmd = 'zeke',
-    auto_reload = true,
-  }
 }
 ```
+
 
 ### Using [packer.nvim](https://github.com/wbthomason/packer.nvim)
 
 ```lua
 use {
   'ghostkellz/zeke.nvim',
+  run = 'cargo build --release',
+  requires = { 'nvim-lua/plenary.nvim' },
   config = function()
-    require('zeke').setup()
+    require('zeke').setup({
+      -- your configuration
+    })
   end
 }
 ```
 
-### Using [vim-plug](https://github.com/junegunn/vim-plug)
 
-```vim
-Plug 'ghostkellz/zeke.nvim'
+## 📋 Requirements
 
-" Add to your init.vim or init.lua
-lua require('zeke').setup()
-```
-
-## 🚀 Prerequisites
-
-1. **Neovim 0.8+** - Required for floating windows and modern Lua features
-2. **Zeke CLI** - Install from [ghostkellz/zeke](https://github.com/ghostkellz/zeke)
-
-### Installing Zeke CLI
-
-```bash
-# Clone and build the Zeke CLI (Zig-based)
-git clone https://github.com/ghostkellz/zeke.git
-cd zeke
-zig build -Doptimize=ReleaseSafe
-```
-
-Make sure the `zeke` binary is in your PATH or configure the plugin with the full path.
-
-## 🎯 Usage
-
-### Commands
-
-| Command | Description |
-|---------|-------------|
-| `:ZekeChat [message]` | Chat with Zeke AI |
-| `:ZekeEdit [instruction]` | Edit current buffer with instruction |
-| `:ZekeExplain` | Explain current buffer |
-| `:ZekeCreate [description]` | Create new file from description |
-| `:ZekeAnalyze [type]` | Analyze code (quality/security/performance) |
-
-### Default Keymaps
-
-| Keymap | Action |
-|--------|--------|
-| `<leader>zc` | Chat with Zeke |
-| `<leader>ze` | Edit current buffer |
-| `<leader>zx` | Explain current buffer |
-| `<leader>zf` | Create new file |
-| `<leader>za` | Analyze code |
-
-### Terminal Controls
-
-When the Zeke terminal is open:
-- `<Esc>` - Exit insert mode
-- `q` - Close terminal (in normal mode)
+- Neovim 0.9+
+- Rust 2024 edition
+- Cargo (Rust package manager)
+- API keys for AI providers (OpenAI/Claude/GitHub)
 
 ## ⚙️ Configuration
 
-### Default Configuration
-
 ```lua
 require('zeke').setup({
-  cmd = 'zeke',           -- Path to zeke binary
-  auto_reload = true,     -- Auto-reload files after edits
+  -- API Keys (can also use environment variables)
+  api_keys = {
+    openai = vim.env.OPENAI_API_KEY,
+    claude = vim.env.ANTHROPIC_API_KEY,
+    copilot = vim.env.GITHUB_TOKEN,
+  },
+
+  -- Default provider and model
+  default_provider = 'openai',  -- 'openai', 'claude', 'copilot', 'ollama'
+  default_model = 'gpt-4',
+
+  -- Generation parameters
+  temperature = 0.7,
+  max_tokens = 2048,
+  stream = false,
+
+  -- UI settings
+  auto_reload = true,
+
+  -- Keymaps
   keymaps = {
     chat = '<leader>zc',
     edit = '<leader>ze',
     explain = '<leader>zx',
-    create = '<leader>zf',
-    analyze = '<leader>za'
-  }
+    create = '<leader>zn',
+    analyze = '<leader>za',
+    models = '<leader>zm',
+    tasks = '<leader>zt',
+    chat_stream = '<leader>zs',
+  },
+
+  -- Server configuration
+  server = {
+    host = '127.0.0.1',
+    port = 7777,
+    auto_start = true,
+  },
 })
 ```
 
-### Custom Configuration Examples
+## 🎮 Commands
 
-```lua
--- Minimal setup
-require('zeke').setup()
+### Core AI Commands
+| Command | Description |
+|---------|-------------|
+| `:ZekeChat [message]` | Chat with AI (opens floating UI if no message) |
+| `:ZekeEdit [instruction]` | Edit current buffer with AI (shows diff) |
+| `:ZekeExplain` | Explain current buffer code |
+| `:ZekeCreate [description]` | Create new file with AI |
+| `:ZekeAnalyze [type]` | Analyze code (quality/performance/security) |
+| `:ZekeChatStream [message]` | Streaming chat |
 
--- Custom binary path
-require('zeke').setup({
-  cmd = '/usr/local/bin/zeke'
-})
+### UI & Chat Commands
+| Command | Description |
+|---------|-------------|
+| `:ZekeToggleChat` | Toggle floating chat window |
+| `:ZekeSaveConversation` | Save current conversation to history |
+| `:ZekeLoadConversation` | Load conversation from history |
 
--- Disable auto-reload
-require('zeke').setup({
-  auto_reload = false
-})
+### Context Management
+| Command | Description |
+|---------|-------------|
+| `:ZekeAddFile` | Add file to context (with picker) |
+| `:ZekeAddCurrent` | Add current file to context |
+| `:ZekeAddSelection` | Add current selection to context |
+| `:ZekeShowContext` | Show context summary |
+| `:ZekeClearContext` | Clear all context |
+| `:ZekeContextFiles` | Show and manage context files |
+| `:ZekeSearch [query]` | Search workspace files |
 
--- Custom keymaps
-require('zeke').setup({
-  keymaps = {
-    chat = '<C-z>c',
-    edit = '<C-z>e',
-    explain = '<C-z>x',
-    create = '<C-z>f',
-    analyze = '<C-z>a'
-  }
-})
+### Model & Provider Management
+| Command | Description |
+|---------|-------------|
+| `:ZekeModels` | List available models |
+| `:ZekeSetModel [model]` | Set active model |
+| `:ZekeCurrentModel` | Show current model |
+| `:ZekeSetProvider [provider]` | Switch AI provider |
 
--- Disable all keymaps (use commands only)
-require('zeke').setup({
-  keymaps = {}
-})
-```
+### Task Management
+| Command | Description |
+|---------|-------------|
+| `:ZekeTasks` | List active tasks |
+| `:ZekeCancelTask [id]` | Cancel specific task |
+| `:ZekeCancelAll` | Cancel all tasks |
 
-## 🔧 CLI Integration
+## 🔑 Default Keymaps
 
-The plugin expects the Zeke CLI to support these commands:
+| Keymap | Action |
+|--------|--------|
+| `<leader>zc` | Chat with AI |
+| `<leader>ze` | Edit buffer |
+| `<leader>zx` | Explain code |
+| `<leader>zn` | Create new file |
+| `<leader>za` | Analyze code |
+| `<leader>zm` | List models |
+| `<leader>zt` | List tasks |
+| `<leader>zs` | Streaming chat |
+
+## 🌍 Environment Variables
+
+Set these environment variables for API access:
 
 ```bash
-zeke nvim chat "message"
-zeke nvim edit "code" "instruction"
-zeke nvim explain "code"
-zeke nvim create "description"
-zeke nvim analyze "code" "type"
+export OPENAI_API_KEY="sk-..."
+export ANTHROPIC_API_KEY="..."
+export GITHUB_TOKEN="ghp_..."
+export OLLAMA_HOST="http://localhost:11434"  # Optional, defaults to this
 ```
 
-## 🎨 Screenshots
+## 🛠️ Building from Source
 
-*Coming soon - screenshots of the floating terminal interface*
+```bash
+# Clone the repository
+git clone https://github.com/ghostkellz/zeke.nvim.git
+cd zeke.nvim
+
+# Build the Rust library
+cargo build --release
+
+# The compiled library will be at:
+# target/release/libzeke_nvim.so (Linux)
+# target/release/libzeke_nvim.dylib (macOS)
+# target/release/zeke_nvim.dll (Windows)
+```
+
+## 📚 API Usage
+
+```lua
+local zeke = require('zeke')
+
+-- Core AI functions
+zeke.chat("Explain async/await in Rust")
+zeke.edit("Add error handling to this function")
+zeke.explain()
+zeke.create("REST API client in Rust")
+zeke.analyze('security')
+
+-- UI functions
+zeke.toggle_chat()
+zeke.save_conversation()
+zeke.list_conversations()
+
+-- Context management
+zeke.add_current_file_to_context()
+zeke.add_selection_to_context()
+zeke.show_context()
+zeke.clear_context()
+zeke.workspace_search("config")
+
+-- Provider management
+zeke.set_provider('ollama')
+zeke.list_models()
+zeke.set_model('llama2')
+zeke.get_current_model()
+
+-- Task management
+zeke.list_tasks()
+zeke.cancel_task(1)
+zeke.cancel_all_tasks()
+```
+
+## 🏗️ Architecture
+
+```
+zeke.nvim/
+├── src/                 # Rust source code
+│   ├── lib.rs          # Main library entry point
+│   ├── ai.rs           # AI utilities
+│   ├── config.rs       # Configuration handling
+│   ├── providers/      # AI provider implementations
+│   │   ├── openai.rs
+│   │   ├── claude.rs
+│   │   └── copilot.rs
+│   ├── streaming.rs    # Streaming support
+│   └── terminal.rs     # Terminal/task management
+├── lua/                # Lua plugin code
+│   └── zeke/
+│       ├── init.lua    # Plugin entry point
+│       ├── config.lua  # Configuration
+│       ├── commands.lua # Command implementations
+│       └── terminal.lua # Terminal UI
+├── plugin/             # Neovim plugin files
+│   └── zeke.lua       # Auto-loaded commands
+└── Cargo.toml         # Rust dependencies
+```
 
 ## 🤝 Contributing
 
@@ -210,21 +266,22 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## 📝 License
+## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## 🙏 Acknowledgments
 
+- Built with [mlua](https://github.com/khvzak/mlua) for Lua bindings
 - Inspired by [claude-code.nvim](https://github.com/anthropics/claude-code.nvim)
-- Built with [Zig](https://ziglang.org) for the CLI backend
-- Made with ❤️ for the Neovim community
+- Part of the [Zeke AI Platform](https://github.com/ghostkellz/zeke)
 
-## 📚 Related Projects
+## 📞 Support
 
-- [Zeke CLI](https://github.com/ghostkellz/zeke) - The Zig-based AI development assistant
-- [claude-code.nvim](https://github.com/anthropics/claude-code.nvim) - Official Claude Code integration
+- Report issues on [GitHub Issues](https://github.com/ghostkellz/zeke.nvim/issues)
+- Join our [Discord](https://discord.gg/zeke) community
+- Email: ckelley@ghostkellz.sh
 
 ---
 
-**Note**: This plugin requires the Zeke CLI to be installed and accessible. Make sure to install it from the [main repository](https://github.com/ghostkellz/zeke) first.
+Made with ❤️ by Christopher Kelley
