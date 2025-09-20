@@ -1,4 +1,7 @@
-# 🚀 zeke.nvim
+<div align="center">
+  <img src="assets/icons/zeke-nvim.png" alt="Zeke Nvim" width="128" height="128">
+  <h1>zeke.nvim</h1>
+</div>
 
 [![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust)](https://www.rust-lang.org/)
 [![Neovim](https://img.shields.io/badge/Neovim-0.9+-green?logo=neovim)](https://neovim.io/)
