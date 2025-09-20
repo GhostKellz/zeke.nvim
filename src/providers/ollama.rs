@@ -161,7 +161,7 @@ impl OllamaProvider {
 }
 
 #[async_trait]
-impl super::AIProvider for OllamaProvider {
+impl super::Provider for OllamaProvider {
     async fn chat(&self, message: &str) -> Result<String> {
         let messages = vec![
             OllamaMessage {

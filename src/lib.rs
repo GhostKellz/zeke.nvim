@@ -7,6 +7,8 @@ mod config;
 mod providers;
 mod streaming;
 mod terminal;
+mod websocket;
+mod discovery;
 
 use config::Config;
 use providers::ProviderManager;

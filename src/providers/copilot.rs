@@ -106,7 +106,7 @@ impl CopilotProvider {
 }
 
 #[async_trait]
-impl super::AIProvider for CopilotProvider {
+impl super::Provider for CopilotProvider {
     async fn chat(&self, message: &str) -> Result<String> {
         let prompt = format!("User: {}\nAssistant:", message);
         self.make_completion_request(prompt).await

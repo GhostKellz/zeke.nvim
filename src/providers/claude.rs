@@ -91,7 +91,7 @@ impl ClaudeProvider {
 }
 
 #[async_trait]
-impl super::AIProvider for ClaudeProvider {
+impl super::Provider for ClaudeProvider {
     async fn chat(&self, message: &str) -> Result<String> {
         let messages = vec![
             Message {

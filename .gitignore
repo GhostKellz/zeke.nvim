@@ -2,3 +2,75 @@
 /zig-out/
 *.o
 *.exe
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock files (uncomment if you want to commit them)
+# Cargo.lock
+
+# Generated files
+*.orig
+
+# Documentation builds
+/doc/
+target/doc/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Configuration files with secrets
+*config*.toml
+!*config*.example.toml
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+/coverage/
+*.profraw
+
+# Library artifacts
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+
+# Debug artifacts
+*.dSYM/
+*.pdb
+
+# Package manager
+node_modules/
+
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Rust workspace
+Cargo.lock
+!Cargo.lock
+
+# Repos for reference
+/archive
+/project-notes

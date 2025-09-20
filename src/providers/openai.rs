@@ -93,7 +93,7 @@ impl OpenAIProvider {
 }
 
 #[async_trait]
-impl super::AIProvider for OpenAIProvider {
+impl super::Provider for OpenAIProvider {
     async fn chat(&self, message: &str) -> Result<String> {
         let messages = vec![
             Message {

@@ -7,6 +7,12 @@ local terminal = require('zeke.terminal')
 local ui = require('zeke.ui')
 local workspace = require('zeke.workspace')
 local diff = require('zeke.diff')
+local auth = require('zeke.auth')
+local consent = require('zeke.consent')
+local websocket = require('zeke.websocket')
+local discovery = require('zeke.discovery')
+local providers_ui = require('zeke.providers_ui')
+local switcher = require('zeke.switcher')
 
 function M.setup(opts)
   opts = opts or {}
@@ -26,6 +32,12 @@ function M.setup(opts)
   ui.setup()
   workspace.setup()
   diff.setup()
+  auth.setup()
+  consent.setup()
+  websocket.setup()
+  discovery.setup()
+  providers_ui.setup()
+  switcher.setup()
 
   vim.api.nvim_create_user_command('ZekeChat', function(args)
     commands.chat(args.args)
@@ -122,6 +134,93 @@ function M.setup(opts)
     commands.workspace_search(args.args)
   end, { nargs = '?', desc = 'Search workspace files' })
 
+  -- Authentication commands
+  vim.api.nvim_create_user_command('ZekeAuth', function()
+    auth.show_auth_ui()
+  end, { desc = 'Manage authentication for AI providers' })
+
+  vim.api.nvim_create_user_command('ZekeAuthGitHub', function()
+    auth.quick_github_auth()
+  end, { desc = 'Authenticate with GitHub (Copilot Pro)' })
+
+  vim.api.nvim_create_user_command('ZekeAuthGoogle', function()
+    auth.quick_google_auth()
+  end, { desc = 'Authenticate with Google (Vertex AI, Gemini)' })
+
+  vim.api.nvim_create_user_command('ZekeAuthOpenAI', function(args)
+    if args.args and args.args ~= '' then
+      local parts = vim.split(args.args, ' ', { plain = true })
+      auth.quick_openai_auth(parts[1], parts[2])
+    else
+      auth.quick_openai_auth()
+    end
+  end, { nargs = '?', desc = 'Authenticate with OpenAI API key [org]' })
+
+  vim.api.nvim_create_user_command('ZekeAuthAnthropic', function(args)
+    if args.args and args.args ~= '' then
+      auth.quick_anthropic_auth(args.args)
+    else
+      auth.quick_anthropic_auth()
+    end
+  end, { nargs = '?', desc = 'Authenticate with Anthropic API key' })
+
+  -- Provider management commands
+  vim.api.nvim_create_user_command('ZekeProviders', function()
+    providers_ui.show_provider_ui()
+  end, { desc = 'Manage AI providers' })
+
+  -- Quick switcher commands
+  vim.api.nvim_create_user_command('ZekeSwitcher', function()
+    switcher.show_switcher()
+  end, { desc = 'Quick provider/model switcher' })
+
+  vim.api.nvim_create_user_command('ZekeSwitchProvider', function()
+    switcher.quick_switch_provider()
+  end, { desc = 'Quick switch provider' })
+
+  vim.api.nvim_create_user_command('ZekeSwitchModel', function()
+    switcher.quick_switch_model()
+  end, { desc = 'Quick switch model' })
+
+  vim.api.nvim_create_user_command('ZekeCycleProvider', function()
+    switcher.cycle_providers()
+  end, { desc = 'Cycle through available providers' })
+
+  vim.api.nvim_create_user_command('ZekeCycleModel', function()
+    switcher.cycle_models()
+  end, { desc = 'Cycle through available models' })
+
+  -- Discovery and WebSocket commands
+  vim.api.nvim_create_user_command('ZekeDiscovery', function()
+    discovery.show_discovery_status()
+  end, { desc = 'Show Zeke CLI discovery status' })
+
+  vim.api.nvim_create_user_command('ZekeStartCLI', function(args)
+    local port = args.args and tonumber(args.args) or nil
+    discovery.start_zeke_cli(port)
+  end, { nargs = '?', desc = 'Start Zeke CLI [port]' })
+
+  vim.api.nvim_create_user_command('ZekeSessionManager', function()
+    discovery.show_session_manager()
+  end, { desc = 'Manage Zeke CLI sessions' })
+
+  -- WebSocket connection commands
+  vim.api.nvim_create_user_command('ZekeConnect', function()
+    local session = discovery.ensure_connection()
+    if session then
+      websocket.connect(session)
+    end
+  end, { desc = 'Connect to Zeke CLI WebSocket' })
+
+  vim.api.nvim_create_user_command('ZekeDisconnect', function()
+    websocket.disconnect()
+  end, { desc = 'Disconnect from Zeke CLI WebSocket' })
+
+  vim.api.nvim_create_user_command('ZekeStatus', function()
+    local health = websocket.health_check()
+    print(vim.inspect(health))
+  end, { desc = 'Show Zeke connection status' })
+
   local keymaps = config.get().keymaps
   if keymaps.chat then
     vim.keymap.set('n', keymaps.chat, function()
@@ -173,6 +272,41 @@ function M.setup(opts)
     end, { desc = 'Streaming chat with Zeke' })
   end
 
+  -- Enhanced keybindings for switcher and providers
+  if keymaps.toggle_chat then
+    vim.keymap.set('n', keymaps.toggle_chat, commands.toggle_chat, { desc = 'Toggle Zeke chat' })
+  end
+
+  if keymaps.provider_status then
+    vim.keymap.set('n', keymaps.provider_status, function()
+      switcher.show_switcher()
+    end, { desc = 'Quick provider/model switcher' })
+  end
+
+  -- Quick provider cycling
+  vim.keymap.set('n', '<leader>zp', function()
+    switcher.cycle_providers()
+  end, { desc = 'Cycle AI providers' })
+
+  vim.keymap.set('n', '<leader>zm', function()
+    switcher.cycle_models()
+  end, { desc = 'Cycle AI models' })
+
+  -- Quick switcher popup
+  vim.keymap.set('n', '<leader>zs', function()
+    switcher.show_switcher()
+  end, { desc = 'Show provider/model switcher' })
+
+  -- Authentication shortcuts
+  vim.keymap.set('n', '<leader>za', function()
+    auth.show_auth_ui()
+  end, { desc = 'Manage authentication' })
+
+  -- Provider management
+  vim.keymap.set('n', '<leader>zP', function()
+    providers_ui.show_provider_ui()
+  end, { desc = 'Manage providers' })
+
   if config.get().auto_reload then
     vim.api.nvim_create_autocmd('FocusGained', {
       pattern = '*',
@@ -211,5 +345,36 @@ M.workspace_search = commands.workspace_search
 
 -- Provider functions
 M.set_provider = commands.set_provider
+
+-- Authentication functions
+M.show_auth = auth.show_auth_ui
+M.auth_github = auth.quick_github_auth
+M.auth_google = auth.quick_google_auth
+M.auth_openai = auth.quick_openai_auth
+M.auth_anthropic = auth.quick_anthropic_auth
+
+-- Provider management functions
+M.show_providers = providers_ui.show_provider_ui
+M.cycle_provider = switcher.cycle_providers
+M.cycle_model = switcher.cycle_models
+M.show_switcher = switcher.show_switcher
+
+-- Discovery and WebSocket functions
+M.show_discovery = discovery.show_discovery_status
+M.start_cli = discovery.start_zeke_cli
+M.connect = function()
+  local session = discovery.ensure_connection()
+  if session then
+    websocket.connect(session)
+  end
+end
+M.disconnect = websocket.disconnect
+M.get_status = websocket.health_check
+
+-- Utility functions
+M.get_current_provider = switcher.get_current_provider
+M.get_current_model = switcher.get_current_model
+M.get_status_line = switcher.get_status_line
+M.is_authenticated = auth.is_authenticated
 
 return M

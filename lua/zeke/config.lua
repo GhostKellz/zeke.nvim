@@ -2,8 +2,8 @@ local M = {}
 
 local default_config = {
   api_keys = {},
-  default_provider = 'openai',
-  default_model = 'gpt-4',
+  default_provider = 'ghostllm',
+  default_model = 'auto',
   temperature = 0.7,
   max_tokens = 2048,
   stream = false,
@@ -17,11 +17,45 @@ local default_config = {
     models = '<leader>zm',
     tasks = '<leader>zt',
     chat_stream = '<leader>zs',
+    toggle_chat = '<leader>zt',
+    provider_status = '<leader>zp',
   },
   server = {
     host = '127.0.0.1',
     port = 7777,
     auto_start = true,
+  },
+  -- GhostLLM proxy configuration
+  ghostllm = {
+    base_url = 'http://localhost:8080',
+    session_token = nil, -- Will be set from environment or auth
+    enable_consent = true,
+    auto_approve_read = true,
+    auto_approve_write = false,
+    fallback_providers = {'openai', 'claude', 'ollama'},
+  },
+  -- Zeke CLI integration
+  zeke_cli = {
+    auto_discover = true,
+    websocket_port = 8081,
+    timeout_ms = 5000,
+    auto_start = true,
+    session_dir = vim.fn.expand('~/.zeke/sessions'),
+  },
+  -- Provider routing preferences
+  routing = {
+    code_completion = 'ollama:deepseek-coder',
+    reasoning = 'claude-3-sonnet',
+    quick_tasks = 'gpt-3.5-turbo',
+    fallback = {'ollama:llama3', 'gpt-3.5-turbo', 'claude-3-haiku'},
+  },
+  -- Cost and security settings
+  security = {
+    enable_consent = true,
+    auto_approve_read = true,
+    auto_approve_write = false,
+    daily_limit_usd = 5.00,
+    warn_threshold_usd = 4.00,
   },
 }
 
@@ -38,6 +72,12 @@ function M.setup(opts)
   end
   if vim.env.GITHUB_TOKEN then
     config.api_keys.copilot = vim.env.GITHUB_TOKEN
+  end
+  if vim.env.GHOSTLLM_SESSION_TOKEN then
+    config.ghostllm.session_token = vim.env.GHOSTLLM_SESSION_TOKEN
+  end
+  if vim.env.GHOSTLLM_URL then
+    config.ghostllm.base_url = vim.env.GHOSTLLM_URL
   end
 end
 
