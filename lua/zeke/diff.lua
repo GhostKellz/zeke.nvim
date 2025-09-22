@@ -1,333 +1,419 @@
+-- Diff management module for Zeke.nvim
+-- Provides native Neovim diff functionality with accept/reject capabilities
 local M = {}
 
--- Diff state
-M.diff_buf = nil
-M.diff_win = nil
-M.original_content = nil
-M.modified_content = nil
-M.target_buffer = nil
-M.is_diff_open = false
+local logger = require('zeke.logger')
 
-function M.setup()
-  -- Create autocommands for cleanup
-  vim.api.nvim_create_autocmd('VimLeavePre', {
-    callback = function()
-      M.close_diff()
-    end,
-  })
+-- Configuration
+M.config = {
+  keep_terminal_focus = false,
+  open_in_new_tab = false,
+  hide_terminal_in_new_tab = false,
+  auto_close_on_accept = true,
+  show_diff_stats = true,
+  vertical_split = true,
+}
+
+-- State management
+M.state = {
+  active_diffs = {},
+  current_diff = nil,
+  autocmd_group = nil,
+}
+
+-- Setup diff module
+function M.setup(opts)
+  opts = opts or {}
+
+  -- Merge configuration
+  for key, value in pairs(opts) do
+    if M.config[key] ~= nil then
+      M.config[key] = value
+    end
+  end
+
+  -- Create autocmd group
+  M.state.autocmd_group = vim.api.nvim_create_augroup("ZekeDiff", { clear = true })
+
+  logger.debug("diff", "Diff module initialized")
 end
 
-function M.extract_code_blocks(content)
-  local code_blocks = {}
-  local in_code_block = false
-  local current_block = {}
-  local block_language = nil
+-- Find main editor window (excludes terminals and sidebars)
+local function find_main_editor_window()
+  local windows = vim.api.nvim_list_wins()
 
-  for line in content:gmatch('[^\r\n]+') do
-    if line:match('^```') then
-      if in_code_block then
-        -- End of code block
-        table.insert(code_blocks, {
-          language = block_language,
-          content = table.concat(current_block, '\n')
-        })
-        current_block = {}
-        in_code_block = false
-        block_language = nil
-      else
-        -- Start of code block
-        in_code_block = true
-        block_language = line:match('^```(.*)$')
-        if block_language == '' then
-          block_language = nil
-        end
+  for _, win in ipairs(windows) do
+    local buf = vim.api.nvim_win_get_buf(win)
+    local buftype = vim.api.nvim_buf_get_option(buf, "buftype")
+    local filetype = vim.api.nvim_buf_get_option(buf, "filetype")
+    local win_config = vim.api.nvim_win_get_config(win)
+
+    local is_suitable = true
+
+    -- Skip floating windows
+    if win_config.relative and win_config.relative ~= "" then
+      is_suitable = false
+    end
+
+    -- Skip terminals and prompts
+    if is_suitable and (buftype == "terminal" or buftype == "prompt") then
+      is_suitable = false
+    end
+
+    -- Skip file explorers and sidebars
+    local excluded_filetypes = {
+      "neo-tree", "neo-tree-popup", "NvimTree", "oil",
+      "minifiles", "aerial", "tagbar", "qf", "help"
+    }
+
+    for _, ft in ipairs(excluded_filetypes) do
+      if filetype == ft then
+        is_suitable = false
+        break
       end
-    elseif in_code_block then
-      table.insert(current_block, line)
+    end
+
+    if is_suitable then
+      return win
     end
   end
 
-  return code_blocks
+  return nil
 end
 
-function M.show_diff(original, modified, target_buf)
-  M.original_content = original
-  M.modified_content = modified
-  M.target_buffer = target_buf or vim.api.nvim_get_current_buf()
+-- Find Zeke terminal window
+local function find_zeke_terminal_window()
+  local terminal = require('zeke.terminal')
+  local terminal_bufnr = terminal.get_active_terminal_bufnr and terminal.get_active_terminal_bufnr()
 
-  if M.is_diff_open then
-    M.close_diff()
+  if not terminal_bufnr then
+    return nil
   end
 
-  -- Create diff buffer
-  M.diff_buf = vim.api.nvim_create_buf(false, true)
+  -- Find window containing the terminal buffer
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_get_buf(win) == terminal_bufnr then
+      return win
+    end
+  end
 
-  -- Calculate window dimensions
-  local width = math.floor(vim.o.columns * 0.9)
-  local height = math.floor(vim.o.lines * 0.8)
-  local row = math.floor((vim.o.lines - height) / 2)
-  local col = math.floor((vim.o.columns - width) / 2)
-
-  -- Create floating window
-  M.diff_win = vim.api.nvim_open_win(M.diff_buf, true, {
-    relative = 'editor',
-    width = width,
-    height = height,
-    row = row,
-    col = col,
-    style = 'minimal',
-    border = 'rounded',
-    title = ' Code Diff - Press a to accept, r to reject, q to close ',
-    title_pos = 'center',
-  })
-
-  -- Configure buffer
-  vim.api.nvim_buf_set_option(M.diff_buf, 'buftype', 'nofile')
-  vim.api.nvim_buf_set_option(M.diff_buf, 'swapfile', false)
-  vim.api.nvim_buf_set_option(M.diff_buf, 'filetype', 'diff')
-  vim.api.nvim_buf_set_option(M.diff_buf, 'modifiable', true)
-
-  -- Generate diff content
-  local diff_lines = M.generate_diff_display()
-  vim.api.nvim_buf_set_lines(M.diff_buf, 0, -1, false, diff_lines)
-  vim.api.nvim_buf_set_option(M.diff_buf, 'modifiable', false)
-
-  -- Set up keymaps
-  local opts = { buffer = M.diff_buf, noremap = true, silent = true }
-  vim.keymap.set('n', 'a', M.accept_changes, opts)
-  vim.keymap.set('n', 'r', M.reject_changes, opts)
-  vim.keymap.set('n', 'q', M.close_diff, opts)
-  vim.keymap.set('n', '<Esc>', M.close_diff, opts)
-  vim.keymap.set('n', '<C-c>', M.close_diff, opts)
-
-  M.is_diff_open = true
-
-  -- Set cursor to first diff line
-  vim.api.nvim_win_set_cursor(M.diff_win, {1, 0})
+  return nil
 end
 
-function M.generate_diff_display()
-  local lines = {}
+-- Create diff view between two files
+function M.create_diff(original_file, modified_file, opts)
+  opts = opts or {}
 
-  -- Header
-  table.insert(lines, '╔═══════════════════════════════════════════════════════════╗')
-  table.insert(lines, '║                      CODE DIFF VIEW                      ║')
-  table.insert(lines, '║  Press "a" to accept changes, "r" to reject, "q" to quit ║')
-  table.insert(lines, '╚═══════════════════════════════════════════════════════════╝')
-  table.insert(lines, '')
+  local diff_id = vim.fn.tempname()
 
-  -- Split content into lines
-  local original_lines = vim.split(M.original_content, '\n')
-  local modified_lines = vim.split(M.modified_content, '\n')
+  -- Create diff state
+  local diff_state = {
+    id = diff_id,
+    original_file = original_file,
+    modified_file = modified_file,
+    original_buf = nil,
+    modified_buf = nil,
+    original_win = nil,
+    modified_win = nil,
+    tab = nil,
+    accepted = false,
+    rejected = false,
+  }
 
-  -- Simple line-by-line diff
-  local max_lines = math.max(#original_lines, #modified_lines)
+  -- Store in active diffs
+  M.state.active_diffs[diff_id] = diff_state
+  M.state.current_diff = diff_state
 
-  table.insert(lines, '┌─ ORIGINAL ─────────────────┬─ MODIFIED ─────────────────┐')
-
-  for i = 1, max_lines do
-    local orig_line = original_lines[i] or ''
-    local mod_line = modified_lines[i] or ''
-
-    -- Truncate long lines for display
-    local max_width = math.floor((vim.o.columns * 0.9 - 6) / 2)
-    if #orig_line > max_width then
-      orig_line = orig_line:sub(1, max_width - 3) .. '...'
-    end
-    if #mod_line > max_width then
-      mod_line = mod_line:sub(1, max_width - 3) .. '...'
-    end
-
-    local status = ''
-    if orig_line ~= mod_line then
-      if orig_line == '' then
-        status = '+ '
-      elseif mod_line == '' then
-        status = '- '
-      else
-        status = '~ '
-      end
-    else
-      status = '  '
-    end
-
-    -- Pad lines to equal width
-    orig_line = orig_line .. string.rep(' ', max_width - #orig_line)
-    mod_line = mod_line .. string.rep(' ', max_width - #mod_line)
-
-    table.insert(lines, string.format('│%s%-*s│%s%-*s│',
-      status, max_width, orig_line, status, max_width, mod_line))
+  -- Open diff based on configuration
+  if M.config.open_in_new_tab then
+    M._open_diff_in_new_tab(diff_state)
+  else
+    M._open_diff_in_current_tab(diff_state)
   end
 
-  table.insert(lines, '└────────────────────────────┴────────────────────────────┘')
-  table.insert(lines, '')
-  table.insert(lines, 'Statistics:')
-  table.insert(lines, string.format('  Original: %d lines', #original_lines))
-  table.insert(lines, string.format('  Modified: %d lines', #modified_lines))
+  -- Set up keymaps for this diff
+  M._setup_diff_keymaps(diff_state)
 
-  -- Count changes
+  -- Keep terminal focus if configured
+  if M.config.keep_terminal_focus then
+    local terminal_win = find_zeke_terminal_window()
+    if terminal_win then
+      vim.api.nvim_set_current_win(terminal_win)
+    end
+  end
+
+  logger.info("diff", "Created diff view: " .. diff_id)
+
+  return diff_id
+end
+
+-- Open diff in current tab
+function M._open_diff_in_current_tab(diff_state)
+  local main_win = find_main_editor_window()
+
+  if not main_win then
+    -- Create new window if no suitable one exists
+    vim.cmd("new")
+    main_win = vim.api.nvim_get_current_win()
+  end
+
+  -- Open original file
+  vim.api.nvim_set_current_win(main_win)
+  vim.cmd("edit " .. vim.fn.fnameescape(diff_state.original_file))
+  diff_state.original_buf = vim.api.nvim_get_current_buf()
+  diff_state.original_win = main_win
+
+  -- Create split for modified file
+  if M.config.vertical_split then
+    vim.cmd("vsplit " .. vim.fn.fnameescape(diff_state.modified_file))
+  else
+    vim.cmd("split " .. vim.fn.fnameescape(diff_state.modified_file))
+  end
+
+  diff_state.modified_buf = vim.api.nvim_get_current_buf()
+  diff_state.modified_win = vim.api.nvim_get_current_win()
+
+  -- Enable diff mode
+  vim.api.nvim_win_set_option(diff_state.original_win, "diff", true)
+  vim.api.nvim_win_set_option(diff_state.modified_win, "diff", true)
+
+  -- Scroll bind
+  vim.api.nvim_win_set_option(diff_state.original_win, "scrollbind", true)
+  vim.api.nvim_win_set_option(diff_state.modified_win, "scrollbind", true)
+end
+
+-- Open diff in new tab
+function M._open_diff_in_new_tab(diff_state)
+  -- Create new tab
+  vim.cmd("tabnew")
+  diff_state.tab = vim.api.nvim_get_current_tabpage()
+
+  -- Open original file
+  vim.cmd("edit " .. vim.fn.fnameescape(diff_state.original_file))
+  diff_state.original_buf = vim.api.nvim_get_current_buf()
+  diff_state.original_win = vim.api.nvim_get_current_win()
+
+  -- Create split for modified file
+  if M.config.vertical_split then
+    vim.cmd("vsplit " .. vim.fn.fnameescape(diff_state.modified_file))
+  else
+    vim.cmd("split " .. vim.fn.fnameescape(diff_state.modified_file))
+  end
+
+  diff_state.modified_buf = vim.api.nvim_get_current_buf()
+  diff_state.modified_win = vim.api.nvim_get_current_win()
+
+  -- Enable diff mode
+  vim.api.nvim_win_set_option(diff_state.original_win, "diff", true)
+  vim.api.nvim_win_set_option(diff_state.modified_win, "diff", true)
+
+  -- Scroll bind
+  vim.api.nvim_win_set_option(diff_state.original_win, "scrollbind", true)
+  vim.api.nvim_win_set_option(diff_state.modified_win, "scrollbind", true)
+end
+
+-- Setup keymaps for diff operations
+function M._setup_diff_keymaps(diff_state)
+  local keymaps = {
+    ["<CR>"] = function() M.accept_diff(diff_state.id) end,
+    ["<leader>da"] = function() M.accept_diff(diff_state.id) end,
+    ["<leader>dr"] = function() M.reject_diff(diff_state.id) end,
+    ["<leader>dd"] = function() M.close_diff(diff_state.id) end,
+    ["[c"] = function() vim.cmd("normal! [c") end,  -- Previous change
+    ["]c"] = function() vim.cmd("normal! ]c") end,  -- Next change
+  }
+
+  -- Apply keymaps to both buffers
+  for key, func in pairs(keymaps) do
+    vim.api.nvim_buf_set_keymap(diff_state.original_buf, "n", key, "", {
+      callback = func,
+      noremap = true,
+      silent = true,
+      desc = "Diff operation"
+    })
+
+    vim.api.nvim_buf_set_keymap(diff_state.modified_buf, "n", key, "", {
+      callback = func,
+      noremap = true,
+      silent = true,
+      desc = "Diff operation"
+    })
+  end
+end
+
+-- Accept diff changes
+function M.accept_diff(diff_id)
+  local diff_state = diff_id and M.state.active_diffs[diff_id] or M.state.current_diff
+
+  if not diff_state then
+    logger.warn("diff", "No active diff to accept")
+    return false
+  end
+
+  if diff_state.accepted or diff_state.rejected then
+    logger.warn("diff", "Diff already processed")
+    return false
+  end
+
+  -- Copy modified content to original file
+  local modified_content = vim.api.nvim_buf_get_lines(diff_state.modified_buf, 0, -1, false)
+
+  -- Write to original file
+  vim.fn.writefile(modified_content, diff_state.original_file)
+
+  diff_state.accepted = true
+
+  logger.info("diff", "Accepted diff changes")
+
+  -- Show stats if configured
+  if M.config.show_diff_stats then
+    M._show_diff_stats(diff_state)
+  end
+
+  -- Auto close if configured
+  if M.config.auto_close_on_accept then
+    M.close_diff(diff_state.id)
+  end
+
+  return true
+end
+
+-- Reject diff changes
+function M.reject_diff(diff_id)
+  local diff_state = diff_id and M.state.active_diffs[diff_id] or M.state.current_diff
+
+  if not diff_state then
+    logger.warn("diff", "No active diff to reject")
+    return false
+  end
+
+  if diff_state.accepted or diff_state.rejected then
+    logger.warn("diff", "Diff already processed")
+    return false
+  end
+
+  diff_state.rejected = true
+
+  logger.info("diff", "Rejected diff changes")
+
+  -- Close diff
+  M.close_diff(diff_state.id)
+
+  return true
+end
+
+-- Close diff view
+function M.close_diff(diff_id)
+  local diff_state = diff_id and M.state.active_diffs[diff_id] or M.state.current_diff
+
+  if not diff_state then
+    return false
+  end
+
+  -- Close windows
+  if vim.api.nvim_win_is_valid(diff_state.modified_win) then
+    vim.api.nvim_win_close(diff_state.modified_win, false)
+  end
+
+  if vim.api.nvim_win_is_valid(diff_state.original_win) then
+    vim.api.nvim_win_close(diff_state.original_win, false)
+  end
+
+  -- Close tab if it was created for diff
+  if diff_state.tab and M.config.open_in_new_tab then
+    local current_tab = vim.api.nvim_get_current_tabpage()
+    if current_tab == diff_state.tab then
+      vim.cmd("tabclose")
+    end
+  end
+
+  -- Remove from active diffs
+  M.state.active_diffs[diff_state.id] = nil
+
+  -- Update current diff
+  if M.state.current_diff == diff_state then
+    M.state.current_diff = nil
+  end
+
+  logger.debug("diff", "Closed diff: " .. diff_state.id)
+
+  return true
+end
+
+-- Accept current diff
+function M.accept_current_diff()
+  return M.accept_diff(nil)
+end
+
+-- Reject/deny current diff
+function M.deny_current_diff()
+  return M.reject_diff(nil)
+end
+
+-- Close all diff tabs
+function M.close_all_diffs()
+  local count = 0
+
+  for diff_id, _ in pairs(M.state.active_diffs) do
+    if M.close_diff(diff_id) then
+      count = count + 1
+    end
+  end
+
+  logger.info("diff", string.format("Closed %d diff(s)", count))
+
+  return count
+end
+
+-- Show diff statistics
+function M._show_diff_stats(diff_state)
+  -- Get line counts
+  local original_lines = vim.api.nvim_buf_line_count(diff_state.original_buf)
+  local modified_lines = vim.api.nvim_buf_line_count(diff_state.modified_buf)
+
   local added = 0
   local removed = 0
   local modified = 0
 
-  for i = 1, max_lines do
-    local orig = original_lines[i] or ''
-    local mod = modified_lines[i] or ''
-
-    if orig ~= mod then
-      if orig == '' then
-        added = added + 1
-      elseif mod == '' then
-        removed = removed + 1
-      else
-        modified = modified + 1
-      end
-    end
-  end
-
-  table.insert(lines, string.format('  Changes: +%d -%d ~%d', added, removed, modified))
-
-  return lines
-end
-
-function M.accept_changes()
-  if not M.target_buffer or not vim.api.nvim_buf_is_valid(M.target_buffer) then
-    vim.notify('Target buffer is no longer valid', vim.log.levels.ERROR)
-    M.close_diff()
-    return
-  end
-
-  -- Apply changes to target buffer
-  local lines = vim.split(M.modified_content, '\n')
-  vim.api.nvim_buf_set_lines(M.target_buffer, 0, -1, false, lines)
-
-  vim.notify('Changes accepted and applied', vim.log.levels.INFO)
-  M.close_diff()
-end
-
-function M.reject_changes()
-  vim.notify('Changes rejected', vim.log.levels.INFO)
-  M.close_diff()
-end
-
-function M.close_diff()
-  if M.diff_win and vim.api.nvim_win_is_valid(M.diff_win) then
-    vim.api.nvim_win_close(M.diff_win, true)
-  end
-
-  if M.diff_buf and vim.api.nvim_buf_is_valid(M.diff_buf) then
-    vim.api.nvim_buf_delete(M.diff_buf, { force = true })
-  end
-
-  M.diff_buf = nil
-  M.diff_win = nil
-  M.original_content = nil
-  M.modified_content = nil
-  M.target_buffer = nil
-  M.is_diff_open = false
-end
-
-function M.show_ai_edit_diff(response)
-  local current_buf = vim.api.nvim_get_current_buf()
-  local current_lines = vim.api.nvim_buf_get_lines(current_buf, 0, -1, false)
-  local original_content = table.concat(current_lines, '\n')
-
-  -- Extract code blocks from AI response
-  local code_blocks = M.extract_code_blocks(response)
-
-  if #code_blocks == 0 then
-    vim.notify('No code blocks found in AI response', vim.log.levels.WARN)
-    return
-  end
-
-  -- Use the first code block as the modified content
-  local modified_content = code_blocks[1].content
-
-  M.show_diff(original_content, modified_content, current_buf)
-end
-
-function M.preview_file_creation(content, filename)
-  -- Create a temporary buffer to show the preview
-  local preview_buf = vim.api.nvim_create_buf(false, true)
-
-  -- Calculate window dimensions
-  local width = math.floor(vim.o.columns * 0.8)
-  local height = math.floor(vim.o.lines * 0.8)
-  local row = math.floor((vim.o.lines - height) / 2)
-  local col = math.floor((vim.o.columns - width) / 2)
-
-  -- Create floating window
-  local preview_win = vim.api.nvim_open_win(preview_buf, true, {
-    relative = 'editor',
-    width = width,
-    height = height,
-    row = row,
-    col = col,
-    style = 'minimal',
-    border = 'rounded',
-    title = ' Preview: ' .. filename .. ' - Press s to save, q to cancel ',
-    title_pos = 'center',
-  })
-
-  -- Configure buffer
-  vim.api.nvim_buf_set_option(preview_buf, 'buftype', 'nofile')
-  vim.api.nvim_buf_set_option(preview_buf, 'swapfile', false)
-
-  -- Detect file type from extension
-  local ft = vim.filetype.match({ filename = filename })
-  if ft then
-    vim.api.nvim_buf_set_option(preview_buf, 'filetype', ft)
-  end
-
-  -- Set content
-  local lines = vim.split(content, '\n')
-  vim.api.nvim_buf_set_lines(preview_buf, 0, -1, false, lines)
-  vim.api.nvim_buf_set_option(preview_buf, 'modifiable', false)
-
-  -- Set up keymaps
-  local opts = { buffer = preview_buf, noremap = true, silent = true }
-  vim.keymap.set('n', 's', function()
-    M.save_preview_file(content, filename, preview_buf, preview_win)
-  end, opts)
-  vim.keymap.set('n', 'q', function()
-    M.close_preview(preview_buf, preview_win)
-  end, opts)
-  vim.keymap.set('n', '<Esc>', function()
-    M.close_preview(preview_buf, preview_win)
-  end, opts)
-end
-
-function M.save_preview_file(content, filename, buf, win)
-  -- Write file
-  local file = io.open(filename, 'w')
-  if file then
-    file:write(content)
-    file:close()
-    vim.notify('File saved: ' .. filename, vim.log.levels.INFO)
-
-    -- Ask if user wants to open the file
-    vim.ui.select({'Yes', 'No'}, {
-      prompt = 'Open the created file?',
-    }, function(choice)
-      if choice == 'Yes' then
-        vim.cmd('edit ' .. filename)
-      end
-    end)
+  -- Simple line count diff (could be enhanced with actual diff algorithm)
+  if modified_lines > original_lines then
+    added = modified_lines - original_lines
+  elseif original_lines > modified_lines then
+    removed = original_lines - modified_lines
   else
-    vim.notify('Failed to save file: ' .. filename, vim.log.levels.ERROR)
+    modified = original_lines
   end
 
-  M.close_preview(buf, win)
+  local stats = string.format(
+    "Diff stats: +%d -%d ~%d lines",
+    added, removed, modified
+  )
+
+  vim.notify(stats, vim.log.levels.INFO)
 end
 
-function M.close_preview(buf, win)
-  if win and vim.api.nvim_win_is_valid(win) then
-    vim.api.nvim_win_close(win, true)
+-- Get active diff count
+function M.get_active_diff_count()
+  local count = 0
+  for _, _ in pairs(M.state.active_diffs) do
+    count = count + 1
+  end
+  return count
+end
+
+-- Get current diff info
+function M.get_current_diff_info()
+  if not M.state.current_diff then
+    return nil
   end
 
-  if buf and vim.api.nvim_buf_is_valid(buf) then
-    vim.api.nvim_buf_delete(buf, { force = true })
-  end
+  return {
+    id = M.state.current_diff.id,
+    original = M.state.current_diff.original_file,
+    modified = M.state.current_diff.modified_file,
+    accepted = M.state.current_diff.accepted,
+    rejected = M.state.current_diff.rejected,
+  }
 end
 
 return M

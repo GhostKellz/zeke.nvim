@@ -1,1 +1,0 @@
-{"rustc":15597765236515928571,"features":"","declared_features":"","target":0,"profile":0,"path":0,"deps":[[8563092807153780548,"build_script_main",false,7855247807707744584]],"local":[{"RerunIfChanged":{"output":"x86_64-unknown-linux-gnu/debug/build/mlua-sys-d4ff76edc9421f2b/output","paths":["build"]}}],"rustflags":["-C","target-cpu=native"],"config":0,"compile_kind":0}
