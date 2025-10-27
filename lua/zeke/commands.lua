@@ -1,317 +1,374 @@
+--[[
+  zeke.nvim Commands Module (CLI-based)
+
+  This module implements all the Neovim commands for zeke.nvim,
+  using the CLI wrapper to communicate with Zeke v0.3.0.
+
+  Refactored from HTTP API to CLI calls.
+--]]
+
 local M = {}
 
-local terminal = require('zeke.terminal')
+local cli = require('zeke.cli')
+local logger = require('zeke.logger')
+local diff = require('zeke.diff')
 
--- Helper function to escape shell arguments
-local function escape_shell_arg(arg)
-  return "'" .. arg:gsub("'", "'\"'\"'") .. "'"
-end
-
--- Chat command
-function M.chat(message)
-  local cmd = string.format('nvim chat %s', escape_shell_arg(message or ''))
-  terminal.execute_command(cmd, {
-    on_success = function(content)
-      terminal.show_response(content)
-    end,
-    on_error = function(error_msg)
-      vim.notify('Chat failed: ' .. error_msg, vim.log.levels.ERROR)
-    end
-  })
-end
-
--- Edit current buffer
-function M.edit_buffer(instruction)
+-- Helper: Get buffer content
+local function get_buffer_content()
   local buf = vim.api.nvim_get_current_buf()
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-  local code = table.concat(lines, '\n')
-  
-  local cmd = string.format('nvim edit %s %s', escape_shell_arg(code), escape_shell_arg(instruction or ''))
-  terminal.execute_command(cmd, {
-    on_success = function(content)
-      -- Show the response and offer to apply changes
-      terminal.show_response(content)
-      
-      -- Ask user if they want to apply the changes
-      vim.ui.select({'Yes', 'No'}, {
-        prompt = 'Apply changes to buffer?',
-      }, function(choice)
-        if choice == 'Yes' then
-          M.apply_edit_to_buffer(buf, content)
-        end
-      end)
-    end,
-    on_error = function(error_msg)
-      vim.notify('Edit failed: ' .. error_msg, vim.log.levels.ERROR)
-    end,
-    on_exit = function(code)
-      if code == 0 then
-        vim.cmd('checktime')
-      end
-    end
-  })
+  return table.concat(lines, '\n')
 end
 
--- Explain current selection or buffer
-function M.explain(code)
-  if not code then
-    -- Get visual selection or current buffer
-    local buf = vim.api.nvim_get_current_buf()
-    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-    code = table.concat(lines, '\n')
+-- Helper: Get file path
+local function get_current_file()
+  return vim.fn.expand('%:p')
+end
+
+-- Helper: Get filetype
+local function get_filetype()
+  return vim.bo.filetype
+end
+
+-- Helper: Show floating window
+local function show_floating_window(lines, opts)
+  opts = opts or {}
+  local width = opts.width or math.floor(vim.o.columns * 0.8)
+  local height = opts.height or math.floor(vim.o.lines * 0.8)
+
+  -- Create buffer
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_option_value('buftype', 'nofile', { buf = buf })
+  vim.api.nvim_set_option_value('filetype', opts.filetype or 'markdown', { buf = buf })
+
+  -- Set content
+  if type(lines) == 'string' then
+    lines = vim.split(lines, '\n', { plain = true })
   end
-  
-  local cmd = string.format('nvim explain %s', escape_shell_arg(code))
-  terminal.execute_command(cmd, {
-    on_success = function(content)
-      terminal.show_response(content)
-    end,
-    on_error = function(error_msg)
-      vim.notify('Explain failed: ' .. error_msg, vim.log.levels.ERROR)
-    end
-  })
-end
-
--- Create new file
-function M.create_file(description)
-  local cmd = string.format('nvim create %s', escape_shell_arg(description or ''))
-  terminal.execute_command(cmd, {
-    on_success = function(content)
-      -- Show response and offer to create the file
-      terminal.show_response(content)
-      
-      -- Ask user for filename and whether to create the file
-      vim.ui.input({
-        prompt = 'Enter filename (or press Esc to cancel): ',
-      }, function(filename)
-        if filename and filename ~= '' then
-          vim.ui.select({'Yes', 'No'}, {
-            prompt = string.format('Create file "%s"?', filename),
-          }, function(choice)
-            if choice == 'Yes' then
-              M.create_file_with_content(filename, content)
-            end
-          end)
-        end
-      end)
-    end,
-    on_error = function(error_msg)
-      vim.notify('Create failed: ' .. error_msg, vim.log.levels.ERROR)
-    end
-  })
-end
-
--- Analyze code
-function M.analyze(analysis_type, code)
-  if not code then
-    local buf = vim.api.nvim_get_current_buf()
-    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-    code = table.concat(lines, '\n')
-  end
-  
-  analysis_type = analysis_type or 'quality'
-  
-  local cmd = string.format('nvim analyze %s %s', escape_shell_arg(code), escape_shell_arg(analysis_type))
-  terminal.execute_command(cmd, {
-    on_success = function(content)
-      terminal.show_response(content)
-    end,
-    on_error = function(error_msg)
-      vim.notify('Analysis failed: ' .. error_msg, vim.log.levels.ERROR)
-    end
-  })
-end
-
--- Helper function to apply edits to buffer
-function M.apply_edit_to_buffer(buf, content)
-  -- Extract code blocks from the response
-  local code_blocks = M.extract_code_blocks(content)
-  
-  if #code_blocks == 0 then
-    vim.notify('No code blocks found in response', vim.log.levels.WARN)
-    return
-  end
-  
-  local code_block = code_blocks[1] -- Use the first code block
-  local lines = vim.split(code_block, '\n', { plain = true })
-  
-  -- Apply changes to buffer
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.notify('Changes applied to buffer', vim.log.levels.INFO)
-end
 
--- Helper function to extract code blocks from markdown
-function M.extract_code_blocks(content)
-  local code_blocks = {}
-  local in_code_block = false
-  local current_block = {}
-  
-  for line in content:gmatch('[^\r\n]+') do
-    if line:match('^```') then
-      if in_code_block then
-        -- End of code block
-        table.insert(code_blocks, table.concat(current_block, '\n'))
-        current_block = {}
-        in_code_block = false
-      else
-        -- Start of code block
-        in_code_block = true
-      end
-    elseif in_code_block then
-      table.insert(current_block, line)
-    end
+  -- Calculate position
+  local col = math.floor((vim.o.columns - width) / 2)
+  local row = math.floor((vim.o.lines - height) / 2)
+
+  -- Open window
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = 'editor',
+    width = width,
+    height = height,
+    col = col,
+    row = row,
+    style = 'minimal',
+    border = 'rounded',
+    title = opts.title or ' Zeke Response ',
+    title_pos = 'center',
+  })
+
+  -- Set window options
+  vim.api.nvim_set_option_value('wrap', true, { win = win })
+  vim.api.nvim_set_option_value('linebreak', true, { win = win })
+
+  -- Set keymaps for closing
+  local close_keys = { 'q', '<Esc>' }
+  for _, key in ipairs(close_keys) do
+    vim.api.nvim_buf_set_keymap(buf, 'n', key, ':close<CR>', { noremap = true, silent = true })
   end
-  
-  return code_blocks
+
+  return buf, win
 end
 
--- Helper function to create file with content
-function M.create_file_with_content(filename, content)
-  -- Extract code blocks
-  local code_blocks = M.extract_code_blocks(content)
-  local file_content = #code_blocks > 0 and code_blocks[1] or content
-  
-  -- Write to file
-  local file = io.open(filename, 'w')
-  if file then
-    file:write(file_content)
-    file:close()
-    vim.notify(string.format('File created: %s', filename), vim.log.levels.INFO)
-    
-    -- Ask if user wants to open the file
-    vim.ui.select({'Yes', 'No'}, {
-      prompt = 'Open the created file?',
-    }, function(choice)
-      if choice == 'Yes' then
-        vim.cmd('edit ' .. filename)
+--[[
+  Chat Command
+--]]
+function M.chat(message)
+  if not message or message == '' then
+    vim.ui.input({ prompt = 'Chat message: ' }, function(input)
+      if input then
+        M.chat(input)
       end
     end)
-  else
-    vim.notify(string.format('Failed to create file: %s', filename), vim.log.levels.ERROR)
+    return
   end
+
+  logger.info('commands', 'Chat: ' .. message)
+
+  -- Show loading notification
+  vim.notify('Zeke is thinking...', vim.log.levels.INFO)
+
+  -- Call CLI
+  local response, err = cli.chat(message)
+
+  if not response then
+    vim.notify('Error: ' .. (err or 'Unknown error'), vim.log.levels.ERROR)
+    logger.error('commands', 'Chat failed: ' .. (err or 'unknown'))
+    return
+  end
+
+  -- Show response in floating window
+  show_floating_window(response, { title = ' Chat Response ' })
 end
 
--- Model management commands
-function M.list_models()
-  local cmd = 'model list'
-  terminal.execute_command(cmd, {
-    on_success = function(content)
-      terminal.show_response(content)
-    end,
-    on_error = function(error_msg)
-      vim.notify('Failed to list models: ' .. error_msg, vim.log.levels.ERROR)
+--[[
+  Explain Command
+--]]
+function M.explain()
+  logger.info('commands', 'Explain current buffer')
+
+  local content = get_buffer_content()
+  local filetype = get_filetype()
+
+  vim.notify('Analyzing code...', vim.log.levels.INFO)
+
+  local response, err = cli.explain(content, filetype)
+
+  if not response then
+    vim.notify('Error: ' .. (err or 'Unknown error'), vim.log.levels.ERROR)
+    return
+  end
+
+  show_floating_window(response, { title = ' Code Explanation ' })
+end
+
+--[[
+  Edit Buffer Command
+--]]
+function M.edit_buffer(instruction)
+  if not instruction or instruction == '' then
+    vim.ui.input({ prompt = 'Edit instruction: ' }, function(input)
+      if input then
+        M.edit_buffer(input)
+      end
+    end)
+    return
+  end
+
+  logger.info('commands', 'Edit buffer: ' .. instruction)
+
+  local file_path = get_current_file()
+  if file_path == '' then
+    vim.notify('Save the buffer first', vim.log.levels.WARN)
+    return
+  end
+
+  vim.notify('Generating edits...', vim.log.levels.INFO)
+
+  local response, err = cli.file_edit(file_path, instruction)
+
+  if not response then
+    vim.notify('Error: ' .. (err or 'Unknown error'), vim.log.levels.ERROR)
+    return
+  end
+
+  -- Create diff
+  local original_file = file_path
+  local modified_content = response
+
+  -- Show diff using zeke.diff module
+  diff.create_diff(original_file, modified_content)
+end
+
+--[[
+  Create File Command
+--]]
+function M.create_file(description)
+  if not description or description == '' then
+    vim.ui.input({ prompt = 'File description: ' }, function(input)
+      if input then
+        M.create_file(input)
+      end
+    end)
+    return
+  end
+
+  logger.info('commands', 'Create file: ' .. description)
+
+  vim.ui.input({ prompt = 'File path: ' }, function(file_path)
+    if not file_path then
+      return
     end
-  })
+
+    -- Infer language from extension
+    local language = vim.fn.fnamemodify(file_path, ':e')
+
+    vim.notify('Generating file...', vim.log.levels.INFO)
+
+    local response, err = cli.generate(description, language)
+
+    if not response then
+      vim.notify('Error: ' .. (err or 'Unknown error'), vim.log.levels.ERROR)
+      return
+    end
+
+    -- Write to file
+    local file = io.open(file_path, 'w')
+    if file then
+      file:write(response)
+      file:close()
+      vim.notify('Created: ' .. file_path, vim.log.levels.INFO)
+      -- Open the file
+      vim.cmd('edit ' .. file_path)
+    else
+      vim.notify('Failed to write file', vim.log.levels.ERROR)
+    end
+  end)
 end
 
-function M.set_model(model_name)
-  if not model_name or model_name == '' then
-    vim.ui.input({
-      prompt = 'Enter model name: ',
-    }, function(input)
+--[[
+  Analyze Command
+--]]
+function M.analyze(analysis_type)
+  analysis_type = analysis_type or 'quality'
+  logger.info('commands', 'Analyze: ' .. analysis_type)
+
+  local file_path = get_current_file()
+  if file_path == '' then
+    vim.notify('Save the buffer first', vim.log.levels.WARN)
+    return
+  end
+
+  vim.notify('Analyzing code (' .. analysis_type .. ')...', vim.log.levels.INFO)
+
+  local response, err = cli.analyze(file_path, analysis_type)
+
+  if not response then
+    vim.notify('Error: ' .. (err or 'Unknown error'), vim.log.levels.ERROR)
+    return
+  end
+
+  show_floating_window(response, { title = ' Analysis: ' .. analysis_type:upper() .. ' ' })
+end
+
+--[[
+  Provider Management
+--]]
+function M.list_providers()
+  logger.info('commands', 'List providers')
+
+  local providers, err = cli.provider_list()
+
+  if not providers then
+    vim.notify('Error: ' .. (err or 'Unknown error'), vim.log.levels.ERROR)
+    return
+  end
+
+  -- Show in floating window
+  local lines = { '# Available Providers', '' }
+  for i, provider in ipairs(providers) do
+    table.insert(lines, i .. '. ' .. provider)
+  end
+
+  show_floating_window(lines, { title = ' Providers ' })
+end
+
+function M.set_provider(provider)
+  if not provider or provider == '' then
+    -- Show picker
+    local providers, err = cli.provider_list()
+    if not providers then
+      vim.notify('Error: ' .. (err or 'Unknown error'), vim.log.levels.ERROR)
+      return
+    end
+
+    vim.ui.select(providers, {
+      prompt = 'Select provider:',
+    }, function(choice)
+      if choice then
+        M.set_provider(choice)
+      end
+    end)
+    return
+  end
+
+  logger.info('commands', 'Set provider: ' .. provider)
+
+  local response, err = cli.provider_switch(provider)
+
+  if not response then
+    vim.notify('Error: ' .. (err or 'Unknown error'), vim.log.levels.ERROR)
+    return
+  end
+
+  vim.notify('Provider set to: ' .. provider, vim.log.levels.INFO)
+end
+
+function M.provider_status()
+  local response, err = cli.provider_status()
+
+  if not response then
+    vim.notify('Error: ' .. (err or 'Unknown error'), vim.log.levels.ERROR)
+    return
+  end
+
+  show_floating_window(response, { title = ' Provider Status ' })
+end
+
+--[[
+  Model Management
+--]]
+function M.list_models()
+  logger.info('commands', 'List models')
+
+  local response, err = cli.model_list()
+
+  if not response then
+    vim.notify('Error: ' .. (err or 'Unknown error'), vim.log.levels.ERROR)
+    return
+  end
+
+  show_floating_window(response, { title = ' Available Models ' })
+end
+
+function M.set_model(model)
+  if not model or model == '' then
+    vim.ui.input({ prompt = 'Model name: ' }, function(input)
       if input then
         M.set_model(input)
       end
     end)
     return
   end
-  
-  local cmd = string.format('model set %s', escape_shell_arg(model_name))
-  terminal.execute_command(cmd, {
-    on_success = function(content)
-      vim.notify('Model updated: ' .. content, vim.log.levels.INFO)
-    end,
-    on_error = function(error_msg)
-      vim.notify('Failed to set model: ' .. error_msg, vim.log.levels.ERROR)
-    end
-  })
+
+  logger.info('commands', 'Set model: ' .. model)
+
+  local response, err = cli.model_set(model)
+
+  if not response then
+    vim.notify('Error: ' .. (err or 'Unknown error'), vim.log.levels.ERROR)
+    return
+  end
+
+  vim.notify('Model set to: ' .. model, vim.log.levels.INFO)
 end
 
 function M.get_current_model()
-  local cmd = 'model current'
-  terminal.execute_command(cmd, {
-    on_success = function(content)
-      vim.notify('Current model: ' .. content, vim.log.levels.INFO)
-    end,
-    on_error = function(error_msg)
-      vim.notify('Failed to get current model: ' .. error_msg, vim.log.levels.ERROR)
-    end
-  })
-end
+  local response, err = cli.model_current()
 
--- Task management commands
-function M.list_tasks()
-  local tasks = terminal.get_active_tasks()
-  
-  if #tasks == 0 then
-    vim.notify('No active tasks', vim.log.levels.INFO)
+  if not response then
+    vim.notify('Error: ' .. (err or 'Unknown error'), vim.log.levels.ERROR)
     return
   end
-  
-  local task_list = {'Active Zeke Tasks:', ''}
-  for _, task in ipairs(tasks) do
-    table.insert(task_list, string.format('Task #%d: %s (PID: %d, Duration: %ds)', 
-      task.id, task.cmd, task.pid, task.duration))
-  end
-  
-  terminal.show_response(table.concat(task_list, '\n'))
+
+  vim.notify('Current model: ' .. response, vim.log.levels.INFO)
+end
+
+-- Placeholder for show_model_picker (can be enhanced later)
+function M.show_model_picker()
+  M.list_models()
+end
+
+--[[
+  Task Management (Placeholders)
+--]]
+function M.list_tasks()
+  vim.notify('Task management coming soon', vim.log.levels.INFO)
 end
 
 function M.cancel_task(task_id)
-  if not task_id then
-    vim.ui.input({
-      prompt = 'Enter task ID to cancel: ',
-    }, function(input)
-      local id = tonumber(input)
-      if id then
-        M.cancel_task(id)
-      end
-    end)
-    return
-  end
-  
-  terminal.cancel_task(task_id)
+  vim.notify('Task cancellation coming soon', vim.log.levels.INFO)
 end
 
 function M.cancel_all_tasks()
-  terminal.cancel_all_tasks()
-end
-
--- Streaming chat command
-function M.chat_stream(message)
-  local cmd = string.format('nvim chat %s', escape_shell_arg(message or ''))
-  
-  -- Create a buffer for streaming output
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_name(buf, 'Zeke Streaming Chat')
-  vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
-  vim.api.nvim_buf_set_option(buf, 'filetype', 'markdown')
-  
-  -- Open in split
-  vim.cmd('split')
-  vim.api.nvim_win_set_buf(0, buf)
-  
-  local content_lines = {'Streaming response...', ''}
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, content_lines)
-  
-  terminal.execute_command_stream(cmd, function(chunk)
-    -- Append chunk to buffer
-    table.insert(content_lines, chunk)
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, content_lines)
-    
-    -- Scroll to bottom
-    vim.cmd('normal! G')
-  end, {
-    on_success = function(content)
-      -- Replace with final content
-      local lines = vim.split(content, '\n', { plain = true })
-      vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-      vim.api.nvim_buf_set_option(buf, 'modifiable', false)
-    end,
-    on_error = function(error_msg)
-      vim.notify('Streaming chat failed: ' .. error_msg, vim.log.levels.ERROR)
-    end
-  })
+  vim.notify('Cancel all tasks coming soon', vim.log.levels.INFO)
 end
 
 return M

@@ -1,0 +1,299 @@
+local M = {}
+
+local logger = require('zeke.logger')
+
+-- Default configuration
+M.base_url = "http://localhost:7878"
+M.timeout = 30000 -- 30 seconds
+M.max_retries = 3
+M.retry_delay_ms = 1000
+M.backoff_multiplier = 2
+
+-- Active requests (for cancellation)
+M.active_requests = {}
+
+-- Set base URL (useful for different ports or hosts)
+function M.set_base_url(url)
+  M.base_url = url
+  logger.info('http_client', 'Base URL set to: ' .. url)
+end
+
+-- Generate request ID
+local function generate_request_id()
+  return string.format("%s-%d", os.date("%Y%m%d%H%M%S"), math.random(1000, 9999))
+end
+
+-- Save failed request for debugging
+local function save_failed_request(request_id, endpoint, body, error_msg, status_code)
+  local cache_dir = vim.fn.stdpath('cache') .. '/zeke'
+  vim.fn.mkdir(cache_dir, 'p')
+
+  local fail_log = {
+    request_id = request_id,
+    timestamp = os.date("%Y-%m-%d %H:%M:%S"),
+    endpoint = endpoint,
+    body = body,
+    error = error_msg,
+    status_code = status_code,
+  }
+
+  local file_path = cache_dir .. '/last_request.json'
+  local ok, err = pcall(function()
+    vim.fn.writefile({vim.json.encode(fail_log, { indent = 2 })}, file_path)
+  end)
+
+  if ok then
+    logger.debug('http_client', 'Saved failed request to: ' .. file_path)
+  else
+    logger.error('http_client', 'Failed to save request log: ' .. tostring(err))
+  end
+end
+
+-- Check if status code is retryable
+local function is_retryable(status_code)
+  return status_code == 429 or status_code >= 500
+end
+
+-- Cancel active request
+function M.cancel_request(request_id)
+  if M.active_requests[request_id] then
+    M.active_requests[request_id].cancelled = true
+    logger.info('http_client', 'Cancelled request: ' .. request_id)
+    return true
+  end
+  return false
+end
+
+-- Cancel all active requests
+function M.cancel_all()
+  local count = 0
+  for request_id, _ in pairs(M.active_requests) do
+    M.cancel_request(request_id)
+    count = count + 1
+  end
+  logger.info('http_client', string.format('Cancelled %d requests', count))
+  return count
+end
+
+-- Chat completion endpoint
+function M.chat(message, opts)
+  opts = opts or {}
+
+  local body = vim.json.encode({
+    message = message,
+    model = opts.model or "smart",
+    temperature = opts.temperature,
+    max_tokens = opts.max_tokens,
+    intent = opts.intent or "explain",
+    language = opts.language,
+    complexity = opts.complexity,
+    project = opts.project,
+  })
+
+  logger.debug('http_client', 'POST /api/chat: ' .. message:sub(1, 50) .. '...')
+  return M.post("/api/chat", body)
+end
+
+-- Code completion endpoint
+function M.complete(prompt, opts)
+  opts = opts or {}
+
+  local body = vim.json.encode({
+    prompt = prompt,
+    language = opts.language,
+    max_tokens = opts.max_tokens or 256,
+    temperature = opts.temperature or 0.2,
+  })
+
+  logger.debug('http_client', 'POST /api/complete')
+  return M.post("/api/complete", body)
+end
+
+-- Code explanation endpoint
+function M.explain(code, opts)
+  opts = opts or {}
+
+  local body = vim.json.encode({
+    code = code,
+    language = opts.language,
+    detail_level = opts.detail_level or "high",
+  })
+
+  logger.debug('http_client', 'POST /api/explain')
+  return M.post("/api/explain", body)
+end
+
+-- Code edit endpoint
+function M.edit(opts)
+  opts = opts or {}
+
+  local body = vim.json.encode({
+    file = opts.file,
+    code = opts.code,
+    instruction = opts.instruction,
+    language = opts.language,
+    dry_run = opts.dry_run or false,
+  })
+
+  logger.debug('http_client', 'POST /api/edit')
+  return M.post("/api/edit", body)
+end
+
+-- Health check endpoint
+function M.health()
+  logger.debug('http_client', 'GET /health')
+  return M.get("/health")
+end
+
+-- Status endpoint
+function M.status()
+  logger.debug('http_client', 'GET /api/status')
+  return M.get("/api/status")
+end
+
+-- Generic POST request with retry logic
+function M.post(endpoint, body, opts)
+  opts = opts or {}
+  local request_id = generate_request_id()
+
+  -- Check if plenary is available
+  local ok, curl = pcall(require, "plenary.curl")
+  if not ok then
+    logger.error('http_client', 'plenary.nvim is not installed. Please install it: https://github.com/nvim-lua/plenary.nvim')
+    error('plenary.nvim is required but not installed')
+  end
+
+  local url = M.base_url .. endpoint
+  local attempt = 0
+  local last_error = nil
+  local last_status = nil
+
+  -- Register request
+  M.active_requests[request_id] = { cancelled = false }
+
+  while attempt < M.max_retries do
+    -- Check if cancelled
+    if M.active_requests[request_id] and M.active_requests[request_id].cancelled then
+      M.active_requests[request_id] = nil
+      error({ cancelled = true, message = "Request cancelled by user" })
+    end
+
+    attempt = attempt + 1
+
+    if attempt > 1 then
+      local delay = M.retry_delay_ms * math.pow(M.backoff_multiplier, attempt - 2)
+      logger.info('http_client', string.format('Retry attempt %d/%d after %dms...', attempt, M.max_retries, delay))
+      vim.wait(delay, function() return false end)
+    end
+
+    local res = curl.post(url, {
+      body = body,
+      headers = {
+        ["Content-Type"] = "application/json",
+        ["X-Request-ID"] = request_id,
+      },
+      timeout = M.timeout,
+    })
+
+    last_status = res.status
+
+    -- Success
+    if res.status == 200 then
+      M.active_requests[request_id] = nil
+
+      local success, decoded = pcall(vim.json.decode, res.body)
+      if not success then
+        logger.error('http_client', 'Failed to decode JSON response: ' .. res.body)
+        save_failed_request(request_id, endpoint, body, 'JSON decode error: ' .. tostring(decoded), 200)
+        error('Invalid JSON response from server')
+      end
+
+      -- Add request metadata
+      decoded._request_id = request_id
+      decoded._attempt = attempt
+
+      return decoded
+    end
+
+    -- Check if retryable
+    if not is_retryable(res.status) then
+      last_error = string.format("HTTP %d: %s", res.status, res.body or "Unknown error")
+      break
+    end
+
+    last_error = string.format("HTTP %d: %s", res.status, res.body or "Unknown error")
+    logger.warn('http_client', string.format('[%s] %s', request_id, last_error))
+  end
+
+  -- All retries failed
+  M.active_requests[request_id] = nil
+  logger.error('http_client', string.format('[%s] Request failed after %d attempts: %s', request_id, attempt, last_error))
+
+  -- Save failed request for debugging
+  save_failed_request(request_id, endpoint, body, last_error, last_status)
+
+  -- Parse error response if JSON
+  local error_data = {}
+  if last_status then
+    local ok, parsed = pcall(vim.json.decode, last_error:match('HTTP %d+: (.+)') or '{}')
+    if ok and type(parsed) == 'table' then
+      error_data = parsed
+    end
+  end
+
+  error({
+    status = last_status,
+    message = last_error,
+    request_id = request_id,
+    attempts = attempt,
+    provider = error_data.provider,
+    error_code = error_data.code,
+  })
+end
+
+-- Generic GET request
+function M.get(endpoint)
+  local ok, curl = pcall(require, "plenary.curl")
+  if not ok then
+    logger.error('http_client', 'plenary.nvim is not installed')
+    error('plenary.nvim is required but not installed')
+  end
+
+  local url = M.base_url .. endpoint
+
+  local res = curl.get(url, {
+    headers = {
+      ["Content-Type"] = "application/json",
+    },
+    timeout = M.timeout,
+  })
+
+  if res.status ~= 200 then
+    local error_msg = string.format("HTTP %d: %s", res.status, res.body or "Unknown error")
+    logger.error('http_client', error_msg)
+    error(error_msg)
+  end
+
+  local success, decoded = pcall(vim.json.decode, res.body)
+  if not success then
+    logger.error('http_client', 'Failed to decode JSON response: ' .. res.body)
+    error('Invalid JSON response from server')
+  end
+
+  return decoded
+end
+
+-- Test connection to the server
+function M.test_connection()
+  local ok, result = pcall(M.health)
+
+  if ok and result.status == "ok" then
+    logger.info('http_client', 'Connected to Zeke server v' .. (result.version or 'unknown'))
+    return true, result
+  else
+    logger.error('http_client', 'Failed to connect to Zeke server at ' .. M.base_url)
+    return false, result
+  end
+end
+
+return M

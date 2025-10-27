@@ -10,16 +10,16 @@
 [![GitHub release](https://img.shields.io/github/release/ghostkellz/zeke.nvim.svg)](https://github.com/ghostkellz/zeke.nvim/releases)
 [![GitHub stars](https://img.shields.io/github/stars/ghostkellz/zeke.nvim)](https://github.com/ghostkellz/zeke.nvim/stargazers)
 
-A powerful Neovim plugin for the Zeke AI platform - your Claude Code alternative, built with Zig for blazing-fast performance.
+A powerful Neovim plugin for the Zeke AI platform - your Claude Code alternative.
 
-🚀 **Now enhanced with advanced features inspired by Claude Code:** visual selection tracking, diff management, file tree integration, and future Ghostlang support!
+🚀 **Refactored to use Zeke CLI v0.3.0**: Simple, fast, and no Zig compilation needed!
 
 ## ✨ Features
 
 ### Core AI Functionality
-- 🤖 **Multiple AI Providers**: OpenAI, Claude, GitHub Copilot, Ollama, GhostLLM
-- ⚡ **Zig Performance**: Native speed with zero-cost abstractions
-- 💬 **Interactive Chat UI**: Floating window with conversation history
+- 🤖 **7 AI Providers**: OpenAI, Claude, xAI, Google, Azure, Ollama, GitHub Copilot
+- ⚡ **CLI-Based**: Direct integration with Zeke CLI v0.3.0
+- 💬 **Interactive Chat**: Floating window responses
 - 📝 **Intelligent Editing**: Context-aware code editing with diff preview
 - 🌊 **Streaming Support**: Real-time streaming responses
 - 🎯 **Code Analysis**: Quality, performance, and security analysis
@@ -33,6 +33,18 @@ A powerful Neovim plugin for the Zeke AI platform - your Claude Code alternative
 - 📱 **Enhanced Terminal**: Multiple providers with smart focus management
 - 👻 **Ghostlang Ready**: Future integration with Ghostlang scripting and Grim editor
 
+### 🎨 Production Polish (v1-Ready!)
+- ⚡ **Retry Logic**: Exponential backoff for rate limits (429) and server errors (5xx)
+- 🚫 **Request Cancellation**: Press ESC to cancel any active AI request
+- 📐 **Visual Range Support**: All prompt commands work on visual selections (`:ZekeFix`, `:ZekeOptimize`, etc.)
+- 🎯 **Model Picker**: Beautiful UI showing `auto`, `fast`, `smart` aliases with OMEN routing
+- 💾 **Auto-Backups**: Files automatically backed up to `~/.cache/zeke/backups/` before edits
+- ⚠️ **Safety Rails**: Warnings for large inputs (>4000 tokens) and large changes (>50 lines)
+- 🔍 **Request Tracking**: Every API call gets unique ID, failed requests saved for debugging
+- 📊 **Token Estimation**: See approximate costs before sending requests
+
+See [POLISH_FEATURES.md](POLISH_FEATURES.md) for complete details!
+
 ### Infrastructure
 - 📁 **Workspace Context**: File tree integration and project awareness
 - 🔍 **Smart Search**: Workspace file indexing and fuzzy search
@@ -44,15 +56,28 @@ A powerful Neovim plugin for the Zeke AI platform - your Claude Code alternative
 
 ## 📦 Installation
 
+### Prerequisites
+
+1. **Install Zeke CLI** (required):
+```bash
+cd /path/to/zeke
+zig build -Doptimize=ReleaseSafe
+sudo cp zig-out/bin/zeke /usr/local/bin/
+```
+
+2. **Configure Zeke**:
+```bash
+mkdir -p ~/.config/zeke
+cp zeke.toml.example ~/.config/zeke/zeke.toml
+# Edit with your API keys
+```
+
 ### Using [lazy.nvim](https://github.com/folke/lazy.nvim)
 
 ```lua
 {
   "ghostkellz/zeke.nvim",
-  build = "zig build -Doptimize=ReleaseSafe",
-  dependencies = {
-    "nvim-lua/plenary.nvim",
-  },
+  -- No build step needed! Just install the Zeke CLI
   config = function()
     require("zeke").setup({
       -- your configuration
@@ -81,29 +106,49 @@ use {
 ## 📋 Requirements
 
 - Neovim 0.9+
-- Zig 0.16.0-dev or later
-- zsync v0.5.4+ (Zig async runtime)
-- API keys for AI providers (OpenAI/Claude/GitHub)
+- **Zeke CLI v0.3.0+** - [Install from GitHub](https://github.com/ghostkellz/zeke)
+- API keys for AI providers configured in `~/.config/zeke/zeke.toml`
+
+## 🔌 Setup
+
+### 1. Configure API Keys
+
+Configure your AI provider API keys in Zeke's config file (`~/.config/zeke/zeke.toml`):
+
+```toml
+[default]
+provider = "ollama"
+model = "qwen2.5-coder:7b"
+
+[providers.openai]
+enabled = true
+model = "gpt-4-turbo"
+
+[providers.claude]
+enabled = true
+model = "claude-3-5-sonnet-20241022"
+
+[providers.ollama]
+enabled = true
+model = "qwen2.5-coder:7b"
+host = "http://localhost:11434"
+```
+
+Or use the `zeke auth` command:
+```bash
+zeke auth openai sk-...
+zeke auth claude ...
+```
 
 ## ⚙️ Configuration
 
 ```lua
 require('zeke').setup({
-  -- API Keys (can also use environment variables)
-  api_keys = {
-    openai = vim.env.OPENAI_API_KEY,
-    claude = vim.env.ANTHROPIC_API_KEY,
-    copilot = vim.env.GITHUB_TOKEN,
-  },
+  -- CLI configuration (no HTTP needed!)
+  -- Plugin calls: vim.fn.system('zeke chat "..."')
 
-  -- Default provider and model
-  default_provider = 'openai',  -- 'openai', 'claude', 'copilot', 'ollama', 'ghostllm'
-  default_model = 'gpt-4',
-
-  -- Generation parameters
-  temperature = 0.7,
-  max_tokens = 2048,
-  stream = false,
+  -- Default model (reads from ~/.config/zeke/zeke.toml)
+  default_model = 'smart',  -- 'smart', 'fast', 'auto', etc.
 
   -- UI settings
   auto_reload = true,
@@ -119,15 +164,6 @@ require('zeke').setup({
     tasks = '<leader>zt',
     chat_stream = '<leader>zs',
   },
-
-  -- Server configuration
-  server = {
-    host = '127.0.0.1',
-    port = 7777,
-    auto_start = true,
-  },
-
-  -- NEW FEATURES: Advanced Configuration
 
   -- Enable selection tracking (NEW!)
   track_selection = true,
@@ -161,6 +197,33 @@ require('zeke').setup({
     fallback_to_lua = true,         -- Use Lua when Ghostlang unavailable
   },
 })
+```
+
+### Architecture
+
+zeke.nvim uses the **Zeke CLI** for all AI operations:
+
+```
+┌─────────────────────────┐
+│      Neovim (Lua)       │
+│   - Commands            │
+│   - CLI Wrapper         │
+│   - UI/Chat             │
+└────────┬────────────────┘
+         │ vim.fn.system('zeke ...')
+    ┌────▼──────────────────┐
+    │  Zeke CLI v0.3.0      │ ✅ Production-ready
+    │  - chat, explain      │
+    │  - provider switch    │
+    │  - file operations    │
+    └────────┬──────────────┘
+             │
+      ┌──────▼──────────────┐
+      │   AI Providers      │
+      │  - OpenAI, Claude   │
+      │  - xAI, Google      │
+      │  - Ollama, Copilot  │
+      └─────────────────────┘
 ```
 
 ## 🎮 Commands

@@ -1,0 +1,141 @@
+# GhostLLM Configuration for Zeke.nvim
+# This file configures the GhostLLM proxy for enterprise AI features
+
+[server]
+# GhostLLM proxy server settings
+host = "127.0.0.1"
+port = 8080
+timeout_seconds = 60
+
+[auth]
+# Authentication settings
+require_auth = false
+admin_api_key = "zeke-nvim-admin-key"  # Change this in production!
+
+[cache]
+# Response caching for improved performance
+enabled = true
+max_size_mb = 100
+ttl_seconds = 3600
+
+[rate_limiting]
+# Rate limiting to prevent API abuse
+enabled = true
+requests_per_minute = 60
+requests_per_hour = 1000
+
+# Provider configurations
+[providers.openai]
+enabled = true
+api_key = "${OPENAI_API_KEY}"  # Uses environment variable
+base_url = "https://api.openai.com/v1"
+models = ["gpt-4", "gpt-4-turbo", "gpt-3.5-turbo", "gpt-4o"]
+default_model = "gpt-4"
+max_tokens = 4096
+temperature = 0.7
+
+[providers.anthropic]
+enabled = true
+api_key = "${ANTHROPIC_API_KEY}"  # Uses environment variable
+base_url = "https://api.anthropic.com/v1"
+models = ["claude-3-5-sonnet-20241022", "claude-3-haiku-20240307", "claude-3-opus-20240229"]
+default_model = "claude-3-5-sonnet-20241022"
+max_tokens = 4096
+
+[providers.github]
+enabled = true
+api_key = "${GITHUB_TOKEN}"  # Uses environment variable
+base_url = "https://api.github.com/copilot"
+models = ["copilot-chat", "copilot-code"]
+default_model = "copilot-chat"
+
+[providers.ollama]
+enabled = true
+base_url = "${OLLAMA_HOST:-http://localhost:11434}"  # Uses env var with default
+models = ["llama2", "codellama", "mistral", "mixtral"]
+default_model = "llama2"
+
+[providers.gemini]
+enabled = false
+api_key = "${GOOGLE_API_KEY}"
+base_url = "https://generativelanguage.googleapis.com/v1"
+models = ["gemini-pro", "gemini-pro-vision"]
+default_model = "gemini-pro"
+
+# Billing and usage tracking
+[billing]
+enabled = true
+track_usage = true
+alert_threshold_usd = 100.0
+monthly_limit_usd = 500.0
+
+# Analytics
+[analytics]
+enabled = true
+track_performance = true
+track_errors = true
+export_metrics = false
+
+# Logging
+[logging]
+level = "info"  # debug, info, warn, error
+file = "/tmp/ghostllm.log"
+max_size_mb = 50
+max_files = 5
+
+# Advanced features
+[features]
+# Smart routing based on task type
+smart_routing = true
+# Automatically retry failed requests
+auto_retry = true
+max_retries = 3
+# Fallback to alternative providers
+provider_fallback = true
+# Stream response processing
+streaming_enabled = true
+
+# Model routing rules
+[routing]
+# Route based on task patterns
+code_generation = ["gpt-4", "claude-3-5-sonnet-20241022", "codellama"]
+code_explanation = ["gpt-3.5-turbo", "claude-3-haiku-20240307"]
+conversation = ["gpt-4", "claude-3-5-sonnet-20241022"]
+analysis = ["gpt-4", "claude-3-opus-20240229"]
+quick_response = ["gpt-3.5-turbo", "claude-3-haiku-20240307", "llama2"]
+
+# Cost optimization
+[cost_optimization]
+enabled = true
+# Use cheaper models for simple tasks
+auto_downgrade = true
+# Cache similar requests
+semantic_caching = true
+# Batch requests when possible
+request_batching = true
+batch_window_ms = 100
+
+# Security
+[security]
+# Sanitize inputs
+input_sanitization = true
+# Filter outputs
+output_filtering = true
+# Block sensitive data
+pii_detection = true
+# Audit all requests
+audit_logging = true
+
+# Integration settings
+[integrations.zeke]
+# Zeke-specific optimizations
+optimize_for_code = true
+preserve_formatting = true
+include_line_numbers = true
+syntax_highlighting = true
+
+# Health checks
+[health]
+enabled = true
+endpoint = "/health"
+check_interval_seconds = 30

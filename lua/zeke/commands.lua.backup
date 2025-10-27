@@ -1,0 +1,454 @@
+local M = {}
+
+local http = require('zeke.http_client')
+local logger = require('zeke.logger')
+local diff = require('zeke.diff')
+
+-- Helper function to get buffer content
+local function get_buffer_content()
+  local buf = vim.api.nvim_get_current_buf()
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  return table.concat(lines, '\n')
+end
+
+-- Helper function to set buffer content
+local function set_buffer_content(content)
+  local buf = vim.api.nvim_get_current_buf()
+  local lines = vim.split(content, '\n', { plain = true })
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+end
+
+-- Helper function to show floating window with response
+local function show_floating_window(lines, opts)
+  opts = opts or {}
+  local width = opts.width or math.floor(vim.o.columns * 0.8)
+  local height = opts.height or math.floor(vim.o.lines * 0.8)
+
+  -- Create buffer
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_option(buf, 'buftype', 'nofile')
+  vim.api.nvim_buf_set_option(buf, 'filetype', opts.filetype or 'markdown')
+
+  -- Set content
+  if type(lines) == 'string' then
+    lines = vim.split(lines, '\n', { plain = true })
+  end
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+
+  -- Calculate position
+  local col = math.floor((vim.o.columns - width) / 2)
+  local row = math.floor((vim.o.lines - height) / 2)
+
+  -- Open window
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = 'editor',
+    width = width,
+    height = height,
+    col = col,
+    row = row,
+    style = 'minimal',
+    border = 'rounded',
+    title = opts.title or ' Zeke Response ',
+    title_pos = 'center',
+  })
+
+  -- Set window options
+  vim.api.nvim_win_set_option(win, 'wrap', true)
+  vim.api.nvim_win_set_option(win, 'linebreak', true)
+
+  -- Set keymaps for closing
+  local close_keys = { 'q', '<Esc>' }
+  for _, key in ipairs(close_keys) do
+    vim.api.nvim_buf_set_keymap(buf, 'n', key, ':close<CR>', { noremap = true, silent = true })
+  end
+
+  return buf, win
+end
+
+-- Chat command with resource support
+function M.chat(message)
+  if not message or message == '' then
+    vim.ui.input({ prompt = 'Chat message (use #buffer, #selection, #file:path): ' }, function(input)
+      if input then
+        M.chat(input)
+      end
+    end)
+    return
+  end
+
+  logger.info('commands', 'Chat: ' .. message)
+
+  -- Parse and inject resources
+  local resources = require('zeke.resources')
+  local enhanced_message = resources.process_message(message)
+
+  local ok, res = pcall(http.chat, enhanced_message, {
+    language = vim.bo.filetype,
+    intent = 'explain',
+  })
+
+  if not ok then
+    vim.notify('Chat failed: ' .. tostring(res), vim.log.levels.ERROR)
+    return
+  end
+
+  -- Show response in floating window
+  show_floating_window(res.response, {
+    title = string.format(' Zeke Chat (%s via %s) ', res.model or 'unknown', res.provider or 'unknown'),
+  })
+
+  logger.info('commands', string.format('Provider: %s, Latency: %dms', res.provider or 'unknown', res.latency_ms or 0))
+end
+
+-- Explain current buffer or selection
+function M.explain(code)
+  if not code then
+    code = get_buffer_content()
+  end
+
+  logger.info('commands', 'Explaining code...')
+
+  local ok, res = pcall(http.explain, code, {
+    language = vim.bo.filetype,
+    detail_level = 'high',
+  })
+
+  if not ok then
+    vim.notify('Explain failed: ' .. tostring(res), vim.log.levels.ERROR)
+    return
+  end
+
+  show_floating_window(res.explanation, {
+    title = string.format(' Zeke Explanation (%s) ', res.model or 'unknown'),
+  })
+
+  logger.info('commands', string.format('Provider: %s, Latency: %dms', res.provider or 'unknown', res.latency_ms or 0))
+end
+
+-- Edit buffer with AI
+function M.edit_buffer(instruction)
+  if not instruction or instruction == '' then
+    vim.ui.input({ prompt = 'Edit instruction: ' }, function(input)
+      if input then
+        M.edit_buffer(input)
+      end
+    end)
+    return
+  end
+
+  local file_path = vim.api.nvim_buf_get_name(0)
+  local code = get_buffer_content()
+  local utils = require('zeke.utils')
+
+  -- Safety check: Warn if code is very large
+  local token_estimate = utils.estimate_tokens(code)
+  if token_estimate > 4000 then
+    local formatted = utils.format_tokens(token_estimate)
+    local proceed = utils.confirm(
+      string.format('Large buffer (%s). Edit may take a while. Continue?', formatted),
+      false
+    )
+    if not proceed then
+      logger.info('commands', 'User cancelled large edit')
+      return
+    end
+  end
+
+  -- Backup file if it exists and is saved
+  if file_path ~= '' and vim.fn.filereadable(file_path) == 1 then
+    local backup_path = utils.backup_file(file_path)
+    if backup_path then
+      vim.notify('Backup created: ' .. vim.fn.fnamemodify(backup_path, ':t'), vim.log.levels.INFO)
+    end
+  end
+
+  logger.info('commands', 'Editing buffer: ' .. instruction)
+
+  local ok, res = pcall(http.edit, {
+    code = code,
+    instruction = instruction,
+    language = vim.bo.filetype,
+    dry_run = false,
+  })
+
+  if not ok then
+    vim.notify('Edit failed: ' .. tostring(res), vim.log.levels.ERROR)
+    return
+  end
+
+  if res.diff and res.diff ~= '' then
+    -- Count changes
+    local changes = utils.count_changed_lines(res.diff)
+
+    -- Warn if large change
+    if changes.total > 50 then
+      local proceed = utils.confirm(
+        string.format('Large change: %d lines added, %d removed. Apply?', changes.added, changes.removed),
+        false
+      )
+      if not proceed then
+        logger.info('commands', 'User rejected large change')
+        vim.notify('Edit cancelled', vim.log.levels.INFO)
+        return
+      end
+    end
+
+    -- Show diff and ask for confirmation
+    diff.show_diff(file_path, res.edited_code, res.diff)
+  else
+    -- Apply changes directly
+    set_buffer_content(res.edited_code)
+    vim.notify('Changes applied', vim.log.levels.INFO)
+  end
+
+  logger.info('commands', string.format('Provider: %s, Latency: %dms', res.provider or 'unknown', res.latency_ms or 0))
+end
+
+-- Create file with AI assistance
+function M.create_file(description)
+  if not description or description == '' then
+    vim.ui.input({ prompt = 'File description: ' }, function(input)
+      if input then
+        M.create_file(input)
+      end
+    end)
+    return
+  end
+
+  logger.info('commands', 'Creating file: ' .. description)
+
+  -- Use chat endpoint for file creation
+  local ok, res = pcall(http.chat, 'Create a file: ' .. description, {
+    intent = 'code',
+  })
+
+  if not ok then
+    vim.notify('Create failed: ' .. tostring(res), vim.log.levels.ERROR)
+    return
+  end
+
+  -- Extract code blocks from response
+  local code_blocks = M.extract_code_blocks(res.response)
+
+  if #code_blocks == 0 then
+    vim.notify('No code blocks found in response', vim.log.levels.WARN)
+    show_floating_window(res.response, { title = ' Zeke Response ' })
+    return
+  end
+
+  local file_content = code_blocks[1]
+
+  -- Ask for filename
+  vim.ui.input({ prompt = 'Enter filename: ' }, function(filename)
+    if filename and filename ~= '' then
+      M.create_file_with_content(filename, file_content)
+    end
+  end)
+end
+
+-- Analyze code
+function M.analyze(analysis_type, code)
+  if not code then
+    code = get_buffer_content()
+  end
+
+  analysis_type = analysis_type or 'quality'
+
+  logger.info('commands', 'Analyzing code (' .. analysis_type .. ')...')
+
+  local prompt = string.format('Analyze this code for %s:\n\n```%s\n%s\n```', analysis_type, vim.bo.filetype, code)
+
+  local ok, res = pcall(http.chat, prompt, {
+    language = vim.bo.filetype,
+    intent = 'explain',
+  })
+
+  if not ok then
+    vim.notify('Analysis failed: ' .. tostring(res), vim.log.levels.ERROR)
+    return
+  end
+
+  show_floating_window(res.response, {
+    title = string.format(' Code Analysis (%s) ', analysis_type),
+  })
+
+  logger.info('commands', string.format('Provider: %s, Latency: %dms', res.provider or 'unknown', res.latency_ms or 0))
+end
+
+-- Helper function to extract code blocks from markdown
+function M.extract_code_blocks(content)
+  local code_blocks = {}
+  local in_code_block = false
+  local current_block = {}
+
+  for line in content:gmatch('[^\r\n]+') do
+    if line:match('^```') then
+      if in_code_block then
+        -- End of code block
+        table.insert(code_blocks, table.concat(current_block, '\n'))
+        current_block = {}
+        in_code_block = false
+      else
+        -- Start of code block
+        in_code_block = true
+      end
+    elseif in_code_block then
+      table.insert(current_block, line)
+    end
+  end
+
+  return code_blocks
+end
+
+-- Helper function to create file with content
+function M.create_file_with_content(filename, content)
+  local file = io.open(filename, 'w')
+  if file then
+    file:write(content)
+    file:close()
+    vim.notify(string.format('File created: %s', filename), vim.log.levels.INFO)
+
+    -- Ask if user wants to open the file
+    vim.ui.select({ 'Yes', 'No' }, {
+      prompt = 'Open the created file?',
+    }, function(choice)
+      if choice == 'Yes' then
+        vim.cmd('edit ' .. vim.fn.fnameescape(filename))
+      end
+    end)
+  else
+    vim.notify(string.format('Failed to create file: %s', filename), vim.log.levels.ERROR)
+  end
+end
+
+-- Apply edits to buffer
+function M.apply_edit_to_buffer(buf, content)
+  local lines = vim.split(content, '\n', { plain = true })
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.notify('Changes applied to buffer', vim.log.levels.INFO)
+end
+
+-- Model management commands
+function M.list_models()
+  logger.info('commands', 'Listing models...')
+
+  local ok, res = pcall(http.status)
+
+  if not ok then
+    vim.notify('Failed to list models: ' .. tostring(res), vim.log.levels.ERROR)
+    return
+  end
+
+  -- Format the response
+  local lines = { 'Available models:', '' }
+
+  if res.models then
+    for _, model in ipairs(res.models) do
+      table.insert(lines, '  • ' .. model)
+    end
+  else
+    table.insert(lines, 'No model information available')
+  end
+
+  show_floating_window(lines, { title = ' Available Models ' })
+end
+
+function M.set_model(model_name)
+  if not model_name or model_name == '' then
+    -- Show model picker
+    M.show_model_picker()
+    return
+  end
+
+  -- Store model preference in config
+  local config = require('zeke.config')
+  config.set('default_model', model_name)
+
+  vim.notify('Default model set to: ' .. model_name, vim.log.levels.INFO)
+  logger.info('commands', 'Model set to: ' .. model_name)
+end
+
+-- Model picker with aliases and routing info
+function M.show_model_picker()
+  logger.info('commands', 'Opening model picker...')
+
+  -- Fetch available models from server
+  local ok, res = pcall(http.status)
+
+  local models = {}
+  local model_descriptions = {
+    -- OMEN Router Aliases
+    auto = "🎯 auto - Let OMEN router choose the best model",
+    fast = "⚡ fast - Quick responses (lightweight models)",
+    smart = "🧠 smart - Balanced quality and speed (default)",
+  }
+
+  if ok and res.models then
+    -- Add models from server
+    for _, model in ipairs(res.models) do
+      if not model_descriptions[model] then
+        -- Add server models with emoji
+        models[#models + 1] = model
+        model_descriptions[model] = "📦 " .. model
+      end
+    end
+  end
+
+  -- Always show aliases first
+  local display_models = {'auto', 'fast', 'smart'}
+
+  -- Add server models
+  for _, model in ipairs(models) do
+    display_models[#display_models + 1] = model
+  end
+
+  -- Create display items with descriptions
+  local display_items = {}
+  for _, model in ipairs(display_models) do
+    local desc = model_descriptions[model] or ("📦 " .. model)
+    display_items[#display_items + 1] = desc
+  end
+
+  -- Get current model
+  local config = require('zeke.config')
+  local current_model = config.get().default_model or 'smart'
+
+  vim.ui.select(display_items, {
+    prompt = string.format('Select Model (current: %s):', current_model),
+    format_item = function(item)
+      return item
+    end,
+  }, function(choice, idx)
+    if choice and idx then
+      local selected_model = display_models[idx]
+      M.set_model(selected_model)
+    end
+  end)
+end
+
+function M.get_current_model()
+  local config = require('zeke.config')
+  local model = config.get().default_model or 'smart'
+  vim.notify('Current model: ' .. model, vim.log.levels.INFO)
+end
+
+-- Task management (stub for now - HTTP API doesn't have task management yet)
+function M.list_tasks()
+  vim.notify('Task management is not yet implemented', vim.log.levels.WARN)
+end
+
+function M.cancel_task(task_id)
+  vim.notify('Task management is not yet implemented', vim.log.levels.WARN)
+end
+
+function M.cancel_all_tasks()
+  vim.notify('Task management is not yet implemented', vim.log.levels.WARN)
+end
+
+-- Streaming chat command (stub for now - needs async implementation)
+function M.chat_stream(message)
+  vim.notify('Streaming chat is not yet implemented. Using regular chat...', vim.log.levels.INFO)
+  M.chat(message)
+end
+
+return M

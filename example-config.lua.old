@@ -1,37 +1,31 @@
 -- Example configuration for Zeke.nvim
 -- Place this in your Neovim config (init.lua or plugins/zeke.lua)
+--
+-- NOTE: This plugin connects to the Zeke HTTP API (localhost:7878)
+-- Start the server first: `zeke serve`
 
 return {
   "ghostkellz/zeke.nvim",
-  build = "zig build -Doptimize=ReleaseSafe",
   dependencies = {
-    "nvim-lua/plenary.nvim",
+    "nvim-lua/plenary.nvim", -- Required for HTTP client
   },
+
+  -- Optional: Build Zig components (only if using Zig features)
+  -- build = "zig build -Doptimize=ReleaseSafe",
+
   config = function()
     require("zeke").setup({
-      -- Core settings
-      binary_path = "./zig-out/bin/zeke_nvim",
-      auto_reload = true,
-      show_errors_as_notifications = false,
-
-      -- Enable advanced features
-      track_selection = true,
-
-      -- API Keys (use environment variables for security)
-      api_keys = {
-        openai = vim.env.OPENAI_API_KEY,
-        claude = vim.env.ANTHROPIC_API_KEY,
-        copilot = vim.env.GITHUB_TOKEN,
+      -- HTTP API connection (Zeke server must be running)
+      http_api = {
+        base_url = "http://localhost:7878",
+        timeout = 30000, -- 30 seconds
       },
 
-      -- Default provider and model
-      default_provider = 'openai',
-      default_model = 'gpt-4',
+      -- Default model (from ~/.config/zeke/zeke.toml)
+      default_model = 'smart', -- Options: 'smart', 'fast', 'auto', or specific model
 
-      -- Generation parameters
-      temperature = 0.7,
-      max_tokens = 2048,
-      stream = false,
+      -- Core settings
+      auto_reload = true, -- Auto-reload files after AI edits
 
       -- Logging configuration
       logger = {
@@ -62,23 +56,10 @@ return {
         fallback_to_lua = true,         -- Use Lua when Ghostlang unavailable
       },
 
-      -- Keymaps
+      -- Keymaps (customize or disable with enabled = false)
       keymaps = {
-        chat = '<leader>zc',
-        edit = '<leader>ze',
-        explain = '<leader>zx',
-        create = '<leader>zn',
-        analyze = '<leader>za',
-        models = '<leader>zm',
-        tasks = '<leader>zt',
-        chat_stream = '<leader>zs',
-      },
-
-      -- Server configuration
-      server = {
-        host = '127.0.0.1',
-        port = 7777,
-        auto_start = true,
+        enabled = true,
+        prefix = '<leader>z', -- Change this to your preferred prefix
       },
     })
 
