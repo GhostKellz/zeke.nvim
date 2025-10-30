@@ -215,12 +215,20 @@ end
 -- Setup keymaps for diff operations
 function M._setup_diff_keymaps(diff_state)
   local keymaps = {
+    -- Accept/reject all
     ["<CR>"] = function() M.accept_diff(diff_state.id) end,
     ["<leader>da"] = function() M.accept_diff(diff_state.id) end,
     ["<leader>dr"] = function() M.reject_diff(diff_state.id) end,
     ["<leader>dd"] = function() M.close_diff(diff_state.id) end,
+
+    -- Hunk navigation
     ["[c"] = function() vim.cmd("normal! [c") end,  -- Previous change
     ["]c"] = function() vim.cmd("normal! ]c") end,  -- Next change
+
+    -- Partial accept/reject
+    ["<leader>dh"] = function() M.accept_hunk(diff_state.id) end,  -- Accept current hunk
+    ["<leader>dx"] = function() M.reject_hunk(diff_state.id) end,  -- Reject current hunk
+    ["<leader>ds"] = function() M.show_hunk_stats(diff_state.id) end,  -- Show hunk stats
   }
 
   -- Apply keymaps to both buffers
@@ -414,6 +422,288 @@ function M.get_current_diff_info()
     accepted = M.state.current_diff.accepted,
     rejected = M.state.current_diff.rejected,
   }
+end
+
+---Get hunk boundaries at cursor position
+---@param bufnr number Buffer number
+---@param lnum number Line number (1-indexed)
+---@return table|nil Hunk info {start_line, end_line, type}
+function M._get_hunk_at_cursor(bufnr, lnum)
+  -- Get diff highlights at cursor
+  local line_hl = vim.fn.diff_hlID(lnum, 1)
+
+  if line_hl == 0 then
+    return nil  -- Not in a hunk
+  end
+
+  -- Find hunk boundaries
+  local start_line = lnum
+  local end_line = lnum
+
+  -- Scan upwards for hunk start
+  while start_line > 1 do
+    local prev_hl = vim.fn.diff_hlID(start_line - 1, 1)
+    if prev_hl == 0 then
+      break
+    end
+    start_line = start_line - 1
+  end
+
+  -- Scan downwards for hunk end
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  while end_line < line_count do
+    local next_hl = vim.fn.diff_hlID(end_line + 1, 1)
+    if next_hl == 0 then
+      break
+    end
+    end_line = end_line + 1
+  end
+
+  -- Determine hunk type
+  local hunk_type = "modified"
+  if line_hl == vim.fn.hlID("DiffAdd") then
+    hunk_type = "added"
+  elseif line_hl == vim.fn.hlID("DiffDelete") then
+    hunk_type = "deleted"
+  elseif line_hl == vim.fn.hlID("DiffChange") then
+    hunk_type = "changed"
+  end
+
+  return {
+    start_line = start_line,
+    end_line = end_line,
+    type = hunk_type,
+  }
+end
+
+---Accept current hunk only
+---@param diff_id string|nil Diff ID (nil for current)
+function M.accept_hunk(diff_id)
+  local diff_state = diff_id and M.state.active_diffs[diff_id] or M.state.current_diff
+
+  if not diff_state then
+    logger.warn("diff", "No active diff")
+    return false
+  end
+
+  -- Get cursor position
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local lnum = cursor[1]
+
+  -- Determine which buffer we're in
+  local current_buf = vim.api.nvim_get_current_buf()
+  local is_modified_buf = current_buf == diff_state.modified_buf
+  local source_buf = is_modified_buf and diff_state.modified_buf or diff_state.original_buf
+  local target_buf = is_modified_buf and diff_state.original_buf or diff_state.modified_buf
+
+  -- Get hunk at cursor
+  local hunk = M._get_hunk_at_cursor(source_buf, lnum)
+
+  if not hunk then
+    vim.notify("Cursor is not in a diff hunk", vim.log.levels.WARN)
+    return false
+  end
+
+  -- Get lines from source hunk
+  local hunk_lines = vim.api.nvim_buf_get_lines(
+    source_buf,
+    hunk.start_line - 1,
+    hunk.end_line,
+    false
+  )
+
+  -- Apply to target buffer
+  vim.api.nvim_buf_set_lines(
+    target_buf,
+    hunk.start_line - 1,
+    hunk.end_line,
+    false,
+    hunk_lines
+  )
+
+  logger.info("diff", string.format(
+    "Accepted hunk: lines %d-%d (%s)",
+    hunk.start_line,
+    hunk.end_line,
+    hunk.type
+  ))
+
+  vim.notify(string.format(
+    "Accepted hunk: lines %d-%d (%s)",
+    hunk.start_line,
+    hunk.end_line,
+    hunk.type
+  ), vim.log.levels.INFO)
+
+  return true
+end
+
+---Reject current hunk only
+---@param diff_id string|nil Diff ID (nil for current)
+function M.reject_hunk(diff_id)
+  local diff_state = diff_id and M.state.active_diffs[diff_id] or M.state.current_diff
+
+  if not diff_state then
+    logger.warn("diff", "No active diff")
+    return false
+  end
+
+  -- Get cursor position
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local lnum = cursor[1]
+
+  -- Get hunk at cursor
+  local current_buf = vim.api.nvim_get_current_buf()
+  local hunk = M._get_hunk_at_cursor(current_buf, lnum)
+
+  if not hunk then
+    vim.notify("Cursor is not in a diff hunk", vim.log.levels.WARN)
+    return false
+  end
+
+  -- Rejecting means keeping the original - so we copy from original to modified
+  local original_lines = vim.api.nvim_buf_get_lines(
+    diff_state.original_buf,
+    hunk.start_line - 1,
+    hunk.end_line,
+    false
+  )
+
+  vim.api.nvim_buf_set_lines(
+    diff_state.modified_buf,
+    hunk.start_line - 1,
+    hunk.end_line,
+    false,
+    original_lines
+  )
+
+  logger.info("diff", string.format(
+    "Rejected hunk: lines %d-%d (%s)",
+    hunk.start_line,
+    hunk.end_line,
+    hunk.type
+  ))
+
+  vim.notify(string.format(
+    "Rejected hunk: lines %d-%d (%s)",
+    hunk.start_line,
+    hunk.end_line,
+    hunk.type
+  ), vim.log.levels.INFO)
+
+  return true
+end
+
+---Show statistics for current hunk
+---@param diff_id string|nil Diff ID (nil for current)
+function M.show_hunk_stats(diff_id)
+  local diff_state = diff_id and M.state.active_diffs[diff_id] or M.state.current_diff
+
+  if not diff_state then
+    logger.warn("diff", "No active diff")
+    return
+  end
+
+  -- Get cursor position
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local lnum = cursor[1]
+  local current_buf = vim.api.nvim_get_current_buf()
+
+  -- Get hunk at cursor
+  local hunk = M._get_hunk_at_cursor(current_buf, lnum)
+
+  if not hunk then
+    vim.notify("Cursor is not in a diff hunk", vim.log.levels.WARN)
+    return
+  end
+
+  local line_count = hunk.end_line - hunk.start_line + 1
+
+  vim.notify(string.format(
+    "Hunk: lines %d-%d (%d lines, type: %s)",
+    hunk.start_line,
+    hunk.end_line,
+    line_count,
+    hunk.type
+  ), vim.log.levels.INFO)
+end
+
+---Get all hunks in current diff
+---@param diff_id string|nil Diff ID (nil for current)
+---@return table List of hunks
+function M.get_all_hunks(diff_id)
+  local diff_state = diff_id and M.state.active_diffs[diff_id] or M.state.current_diff
+
+  if not diff_state then
+    return {}
+  end
+
+  local hunks = {}
+  local bufnr = diff_state.modified_buf
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+
+  local i = 1
+  while i <= line_count do
+    local hunk = M._get_hunk_at_cursor(bufnr, i)
+    if hunk then
+      table.insert(hunks, hunk)
+      i = hunk.end_line + 1
+    else
+      i = i + 1
+    end
+  end
+
+  return hunks
+end
+
+---Show diff statistics with hunk breakdown
+---@param diff_id string|nil Diff ID (nil for current)
+function M.show_diff_stats_detailed(diff_id)
+  local diff_state = diff_id and M.state.active_diffs[diff_id] or M.state.current_diff
+
+  if not diff_state then
+    vim.notify("No active diff", vim.log.levels.WARN)
+    return
+  end
+
+  local hunks = M.get_all_hunks(diff_id)
+
+  local stats = {
+    total_hunks = #hunks,
+    added = 0,
+    deleted = 0,
+    changed = 0,
+  }
+
+  for _, hunk in ipairs(hunks) do
+    if hunk.type == "added" then
+      stats.added = stats.added + 1
+    elseif hunk.type == "deleted" then
+      stats.deleted = stats.deleted + 1
+    else
+      stats.changed = stats.changed + 1
+    end
+  end
+
+  local message = string.format(
+    "Diff Statistics:\n" ..
+    "Total hunks: %d\n" ..
+    "Added: %d\n" ..
+    "Deleted: %d\n" ..
+    "Changed: %d\n\n" ..
+    "Keymaps:\n" ..
+    "[c / ]c - Navigate hunks\n" ..
+    "<leader>dh - Accept current hunk\n" ..
+    "<leader>dx - Reject current hunk\n" ..
+    "<leader>da - Accept all\n" ..
+    "<leader>dr - Reject all",
+    stats.total_hunks,
+    stats.added,
+    stats.deleted,
+    stats.changed
+  )
+
+  vim.notify(message, vim.log.levels.INFO)
 end
 
 return M

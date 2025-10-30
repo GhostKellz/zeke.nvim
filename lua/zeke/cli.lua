@@ -10,6 +10,10 @@
 
 local M = {}
 
+local requests = require('zeke.requests')
+local logger = require('zeke.logger')
+local errors = require('zeke.errors')
+
 -- Check if Zeke CLI is available
 function M.check_installation()
   local handle = io.popen("which zeke 2>/dev/null")
@@ -34,21 +38,65 @@ local function escape_shell(str)
   return str:gsub('"', '\\"'):gsub("'", "'\\''")
 end
 
--- Execute zeke command and return output
-local function execute(cmd)
-  local logger = require('zeke.logger')
+-- Execute zeke command and return output (with retry support)
+local function execute(cmd, opts)
+  opts = opts or {}
   logger.debug("cli", "Executing: " .. cmd)
 
-  local output = vim.fn.system(cmd)
-  local exit_code = vim.v.shell_error
+  -- Create request tracking
+  local request = requests.create({
+    prompt = opts.prompt or cmd,
+    model = opts.model,
+    provider = opts.provider,
+    max_retries = opts.max_retries or 3,
+  })
 
-  if exit_code ~= 0 then
-    logger.error("cli", "Command failed with exit code " .. exit_code)
-    logger.error("cli", "Output: " .. output)
-    return nil, output
+  -- Execute with automatic retry
+  local result = nil
+  local error_msg = nil
+
+  requests.execute_with_retry(
+    request,
+    function(req, on_success, on_error)
+      -- Actual execution
+      local output = vim.fn.system(cmd)
+      local exit_code = vim.v.shell_error
+
+      if exit_code ~= 0 then
+        logger.error("cli", "Command failed with exit code " .. exit_code)
+        logger.error("cli", "Output: " .. output)
+        on_error("Command failed: " .. output)
+      else
+        on_success(output)
+      end
+    end,
+    function(response)
+      result = response
+    end,
+    function(error, req, reason)
+      error_msg = error
+      logger.error("cli", "Request failed after retries: " .. error)
+      if reason then
+        logger.error("cli", "Reason: " .. reason)
+      end
+
+      -- Show helpful error message
+      errors.show(error)
+    end
+  )
+
+  -- Wait for completion (blocking for now)
+  local timeout = 0
+  while result == nil and error_msg == nil and timeout < 300 do
+    vim.wait(100)
+    timeout = timeout + 1
   end
 
-  return output, nil
+  if error_msg then
+    return nil, error_msg
+  end
+
+  return result, nil
 end
 
 --[[

@@ -80,6 +80,7 @@ M.defaults = {
     chat = '<leader>zz',           -- Quick chat
     explain = '<leader>zx',        -- Explain code
     edit = '<leader>ze',           -- Edit with AI
+    actions = '<leader>za',        -- Code actions menu
 
     -- Model management
     model_picker = '<leader>zm',   -- Show model picker

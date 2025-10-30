@@ -24,6 +24,12 @@ local cli = require('zeke.cli')
 local completion = require('zeke.completion')
 local chat_panel = require('zeke.chat.panel')
 local lsp = require('zeke.lsp')
+local actions = require('zeke.actions')
+local requests = require('zeke.requests')
+local tokens = require('zeke.tokens')
+local backup = require('zeke.backup')
+local safety = require('zeke.safety')
+local statusline = require('zeke.statusline')
 
 function M.setup(opts)
   opts = opts or {}
@@ -53,6 +59,12 @@ function M.setup(opts)
   -- Setup inline completions
   if cfg.completion ~= false then
     completion.setup(cfg.completion or {})
+  end
+
+  -- Setup statusline
+  if cfg.statusline ~= false then
+    statusline.setup(cfg.statusline or {})
+    statusline.setup_autocommands()
   end
 
   -- Health check
@@ -136,6 +148,35 @@ function M.setup(opts)
     local analysis_type = args.args or 'quality'
     commands.analyze(analysis_type)
   end, { nargs = '?', desc = 'Analyze code with Zeke' })
+
+  -- Code Actions Menu
+  vim.api.nvim_create_user_command('ZekeActions', function()
+    actions.show_picker()
+  end, { desc = 'Show context-aware code actions menu' })
+
+  vim.api.nvim_create_user_command('ZekeExplainCode', function()
+    local ctx = actions.gather_context()
+    local action = vim.tbl_filter(function(a) return a.id == "explain" end, actions.actions)[1]
+    actions.execute_action(action, ctx)
+  end, { desc = 'Explain code (smart context)' })
+
+  vim.api.nvim_create_user_command('ZekeFixCode', function()
+    local ctx = actions.gather_context()
+    local action = vim.tbl_filter(function(a) return a.id == "fix" end, actions.actions)[1]
+    actions.execute_action(action, ctx)
+  end, { desc = 'Fix code issues (smart context)' })
+
+  vim.api.nvim_create_user_command('ZekeRefactorCode', function()
+    local ctx = actions.gather_context()
+    local action = vim.tbl_filter(function(a) return a.id == "refactor" end, actions.actions)[1]
+    actions.execute_action(action, ctx)
+  end, { desc = 'Refactor code (smart context)' })
+
+  vim.api.nvim_create_user_command('ZekeGenerateTests', function()
+    local ctx = actions.gather_context()
+    local action = vim.tbl_filter(function(a) return a.id == "test" end, actions.actions)[1]
+    actions.execute_action(action, ctx)
+  end, { desc = 'Generate tests (smart context)' })
 
   -- LSP integration commands
   vim.api.nvim_create_user_command('ZekeFix', function()
@@ -233,6 +274,47 @@ function M.setup(opts)
     vim.notify(table.concat(status_lines, "\n"), vim.log.levels.INFO)
   end, { desc = 'Check Zeke CLI health' })
 
+  -- Help commands
+  local help = require('zeke.help')
+
+  vim.api.nvim_create_user_command('ZekeHelp', function()
+    help.show()
+  end, { desc = 'Show interactive help' })
+
+  vim.api.nvim_create_user_command('ZekeQuickRef', function()
+    help.show_quick_reference()
+  end, { desc = 'Show quick reference' })
+
+  -- Production Polish Commands
+  vim.api.nvim_create_user_command('ZekeRequests', function()
+    requests.show_inspector()
+  end, { desc = 'Show request inspector' })
+
+  vim.api.nvim_create_user_command('ZekeTokens', function()
+    vim.notify(tokens.format_usage_stats(), vim.log.levels.INFO)
+  end, { desc = 'Show token usage statistics' })
+
+  vim.api.nvim_create_user_command('ZekeTokensReset', function()
+    tokens.reset_usage()
+    vim.notify("Token statistics reset", vim.log.levels.INFO)
+  end, { desc = 'Reset token statistics' })
+
+  vim.api.nvim_create_user_command('ZekeBackups', function()
+    backup.show_backup_picker()
+  end, { desc = 'Show backup picker' })
+
+  vim.api.nvim_create_user_command('ZekeBackupStats', function()
+    backup.show_stats()
+  end, { desc = 'Show backup statistics' })
+
+  vim.api.nvim_create_user_command('ZekeBackupCleanup', function()
+    backup.cleanup_all_old_backups()
+  end, { desc = 'Cleanup old backups' })
+
+  vim.api.nvim_create_user_command('ZekeSafety', function()
+    safety.show_stats()
+  end, { desc = 'Show safety statistics' })
+
   -- =============================================================================
   -- Keymaps
   -- =============================================================================
@@ -256,6 +338,17 @@ function M.setup(opts)
     if km.explain then
       vim.keymap.set('n', km.explain, ':ZekeExplain<CR>', { desc = 'Explain code', silent = true })
     end
+
+    -- Code Actions (new!)
+    if km.actions then
+      vim.keymap.set({'n', 'v'}, km.actions, ':ZekeActions<CR>', { desc = 'Code Actions Menu', silent = true })
+    end
+
+    -- Quick actions
+    vim.keymap.set({'n', 'v'}, '<leader>ze', ':ZekeExplainCode<CR>', { desc = 'Explain code', silent = true })
+    vim.keymap.set({'n', 'v'}, '<leader>zf', ':ZekeFixCode<CR>', { desc = 'Fix code', silent = true })
+    vim.keymap.set({'n', 'v'}, '<leader>zr', ':ZekeRefactorCode<CR>', { desc = 'Refactor code', silent = true })
+    vim.keymap.set({'n', 'v'}, '<leader>zt', ':ZekeGenerateTests<CR>', { desc = 'Generate tests', silent = true })
 
     if km.edit then
       vim.keymap.set('n', km.edit, function()

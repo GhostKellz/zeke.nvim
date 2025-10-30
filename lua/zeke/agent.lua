@@ -16,6 +16,11 @@ local cli = require('zeke.cli')
 local models = require('zeke.models')
 local logger = require('zeke.logger')
 local config = require('zeke.config')
+local mentions = require('zeke.mentions')
+local context_chips = require('zeke.ui.context_chips')
+local tokens = require('zeke.tokens')
+local safety = require('zeke.safety')
+local progress = require('zeke.progress')
 
 -- Agent state
 M.state = {
@@ -160,6 +165,24 @@ local function setup_agent_keymaps(chat_bufnr, input_bufnr)
   vim.keymap.set('n', '<C-l>', function()
     M.clear_chat()
   end, opts)
+
+  -- @file picker (Ctrl+F in insert mode)
+  vim.keymap.set('i', '<C-f>', function()
+    mentions.show_file_picker(function(filepath)
+      -- Insert @file:path at cursor
+      local cursor = vim.api.nvim_win_get_cursor(M.state.input_winnr)
+      local line = vim.api.nvim_buf_get_lines(input_bufnr, cursor[1] - 1, cursor[1], false)[1]
+
+      local before = line:sub(1, cursor[2])
+      local after = line:sub(cursor[2] + 1)
+      local new_line = before .. "@file:" .. filepath .. " " .. after
+
+      vim.api.nvim_buf_set_lines(input_bufnr, cursor[1] - 1, cursor[1], false, { new_line })
+
+      -- Move cursor after inserted text
+      vim.api.nvim_win_set_cursor(M.state.input_winnr, { cursor[1], #before + #filepath + 7 })
+    end)
+  end, { buffer = input_bufnr, silent = true })
 end
 
 -- Open the agent interface
@@ -260,21 +283,84 @@ function M.send_message()
 
   logger.info("agent", "Sending message: " .. message)
 
-  -- Clear input buffer
-  vim.api.nvim_buf_set_lines(input_bufnr, 0, -1, false, {})
+  -- Parse @-mentions
+  local parsed_mentions = mentions.parse(message)
 
-  -- Add user message to chat
-  append_to_chat(message, "user")
+  -- Show context chips if mentions found
+  if #parsed_mentions > 0 then
+    local chips = mentions.get_chips(parsed_mentions)
+    logger.info("agent", string.format("Found %d mentions", #parsed_mentions))
 
-  -- Add to history
-  table.insert(M.state.conversation_history, { role = "user", content = message })
+    -- Show chips inline in chat
+    local chat_bufnr = M.state.chat_bufnr
+    if chat_bufnr and vim.api.nvim_buf_is_valid(chat_bufnr) then
+      local line_count = vim.api.nvim_buf_line_count(chat_bufnr)
+      context_chips.show_inline(chat_bufnr, line_count - 1, chips)
+    end
+  end
 
-  -- Show "thinking" indicator
-  append_to_chat("...", "assistant")
+  -- Process message with context
+  local processed_message, _ = mentions.process(message)
 
-  -- Send to CLI (streaming)
-  M.state.current_job = cli.stream_chat(
-    message,
+  -- Check safety before sending
+  local is_safe, safety_check = safety.check_safety({
+    prompt = processed_message,
+    operation_type = "chat",
+  })
+
+  -- Show safety confirmation if needed
+  if not is_safe or (safety_check and #safety_check.warnings > 0) then
+    safety.show_safety_dialog(safety_check, function(confirmed)
+      if not confirmed then
+        logger.info("agent", "Message cancelled by user")
+        return
+      end
+      -- Continue with sending
+      M._do_send_message(input_bufnr, message, processed_message)
+    end)
+  else
+    -- Safe to proceed directly
+    M._do_send_message(input_bufnr, message, processed_message)
+  end
+end
+
+-- Internal helper to actually send the message
+function M._do_send_message(input_bufnr, message, processed_message)
+  local current_model = models.get_current()
+
+  -- Show token estimate
+  tokens.show_estimate_prompt(processed_message, current_model.name, function(confirmed, estimate)
+    if not confirmed then
+      logger.info("agent", "Message cancelled by user")
+      return
+    end
+
+    -- Track token usage
+    if estimate then
+      tokens.track_usage(estimate.input_tokens, estimate.output_tokens, estimate.cost)
+    end
+
+    -- Track rate limiting
+    safety.track_request()
+
+    -- Clear input buffer
+    vim.api.nvim_buf_set_lines(input_bufnr, 0, -1, false, {})
+
+    -- Add user message to chat (original message without expanded context)
+    append_to_chat(message, "user")
+
+    -- Add to history (processed message with context for AI)
+    table.insert(M.state.conversation_history, { role = "user", content = processed_message })
+
+    -- Show "thinking" indicator
+    append_to_chat("...", "assistant")
+
+    -- Start progress indicator
+    local progress_id = progress.loading("Waiting for AI response")
+
+    -- Send to CLI (streaming) with processed message
+    M.state.current_job = cli.stream_chat(
+      processed_message,
     function(chunk)
       -- Update last message with streamed content
       local chat_bufnr = M.state.chat_bufnr
@@ -297,17 +383,28 @@ function M.send_message()
         vim.api.nvim_win_set_cursor(M.state.chat_winnr, { vim.api.nvim_buf_line_count(chat_bufnr), 0 })
       end
     end,
-    function(full_response, exit_code)
-      if exit_code == 0 then
-        logger.info("agent", "Response received")
-        table.insert(M.state.conversation_history, { role = "assistant", content = full_response })
-      else
-        append_to_chat("Error: Request failed", "assistant")
-        logger.error("agent", "Request failed with exit code " .. exit_code)
+      function(full_response, exit_code)
+        -- Stop progress
+        progress.stop(progress_id)
+
+        if exit_code == 0 then
+          logger.info("agent", "Response received")
+          table.insert(M.state.conversation_history, { role = "assistant", content = full_response })
+
+          -- Update token usage with actual output
+          if estimate then
+            local output_tokens = tokens.estimate_tokens(full_response)
+            local actual_cost = tokens.calculate_cost(estimate.input_tokens, output_tokens, current_model.name)
+            tokens.track_usage(estimate.input_tokens, output_tokens, actual_cost)
+          end
+        else
+          append_to_chat("Error: Request failed", "assistant")
+          logger.error("agent", "Request failed with exit code " .. exit_code)
+        end
+        M.state.current_job = nil
       end
-      M.state.current_job = nil
-    end
-  )
+    )
+  end)
 end
 
 -- Clear chat history

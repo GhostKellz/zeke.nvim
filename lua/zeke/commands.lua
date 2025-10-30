@@ -12,6 +12,9 @@ local M = {}
 local cli = require('zeke.cli')
 local logger = require('zeke.logger')
 local diff = require('zeke.diff')
+local backup = require('zeke.backup')
+local safety = require('zeke.safety')
+local progress = require('zeke.progress')
 
 -- Helper: Get buffer content
 local function get_buffer_content()
@@ -150,21 +153,55 @@ function M.edit_buffer(instruction)
     return
   end
 
-  vim.notify('Generating edits...', vim.log.levels.INFO)
+  local bufnr = vim.api.nvim_get_current_buf()
 
-  local response, err = cli.file_edit(file_path, instruction)
+  -- Safety confirmation with auto-backup
+  safety.confirm_edit(bufnr, instruction, function(confirmed, backup_info)
+    if not confirmed then
+      logger.info('commands', 'Edit cancelled by user')
+      return
+    end
 
-  if not response then
-    vim.notify('Error: ' .. (err or 'Unknown error'), vim.log.levels.ERROR)
-    return
-  end
+    -- Start step-based progress
+    local prog = progress.steps("edit_buffer", {
+      "Creating backup",
+      "Sending to AI",
+      "Generating edits",
+      "Creating diff view",
+    })
 
-  -- Create diff
-  local original_file = file_path
-  local modified_content = response
+    prog.next() -- Step 2: Sending to AI
+    prog.next() -- Step 3: Generating edits
 
-  -- Show diff using zeke.diff module
-  diff.create_diff(original_file, modified_content)
+    local response, err = cli.file_edit(file_path, instruction)
+
+    if not response then
+      prog.fail('Edit generation failed')
+
+      -- Show backup restoration option if we have a backup
+      if backup_info then
+        vim.ui.select({ 'Yes', 'No' }, {
+          prompt = 'Edit failed. Restore backup?',
+        }, function(choice)
+          if choice == 'Yes' then
+            backup.restore_backup(backup_info.path, bufnr)
+          end
+        end)
+      end
+      return
+    end
+
+    prog.next() -- Step 4: Creating diff view
+
+    -- Create diff
+    local original_file = file_path
+    local modified_content = response
+
+    -- Show diff using zeke.diff module (with backup info for undo)
+    diff.create_diff(original_file, modified_content, backup_info)
+
+    prog.complete('Edit complete - Review changes in diff view')
+  end)
 end
 
 --[[
